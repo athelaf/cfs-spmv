@@ -105,11 +105,11 @@ class CSRMatrix : public SparseMatrix<IndexT, ValueT> {
       ColorMap;
 
 public:
-
   CSRMatrix() = delete;
 
   // Initialize CSR from an MMF file
-  CSRMatrix(const string &filename, Platform platform = Platform::cpu, bool symmetric = false)
+  CSRMatrix(const string &filename, Platform platform = Platform::cpu,
+            bool symmetric = false)
       : platform_(platform), owns_data_(true) {
     MMF<IndexT, ValueT> mmf(filename);
     symmetric_ = mmf.IsSymmetric();
@@ -122,12 +122,13 @@ public:
     if (symmetric) {
       if (symmetric_ != symmetric) {
 #ifdef _LOG_INFO
-	cout << "[INFO]: matrix is not symmetric!" << endl;
-	cout << "[INFO]: rolling back to CSR format..." << endl;      
+        cout << "[INFO]: matrix is not symmetric!" << endl;
+        cout << "[INFO]: rolling back to CSR format..." << endl;
 #endif
       } else {
 #ifdef _LOG_INFO
-	cout << "[INFO]: using SSS format to store the sparse matrix..." << endl;
+        cout << "[INFO]: using SSS format to store the sparse matrix..."
+             << endl;
 #endif
       }
     }
@@ -143,7 +144,8 @@ public:
     nthreads_ = get_threads();
     row_split_ = nullptr;
     // Symmetry compression
-    cmp_symmetry_ = atomics_ = effective_ranges_ = explicit_conflicts_ = conflict_free_ = false;
+    cmp_symmetry_ = atomics_ = effective_ranges_ = explicit_conflicts_ =
+        conflict_free_ = false;
     nnz_lower_ = nnz_diag_ = nrows_left_ = nconflicts_ = ncolors_ = 0;
     rowptr_sym_ = colind_sym_ = nullptr;
     values_sym_ = diagonal_ = nullptr;
@@ -215,7 +217,8 @@ public:
     nthreads_ = get_threads();
     row_split_ = nullptr;
     // Symmetry compression
-    cmp_symmetry_ = atomics_ = effective_ranges_ = explicit_conflicts_ = conflict_free_ = false;
+    cmp_symmetry_ = atomics_ = effective_ranges_ = explicit_conflicts_ =
+        conflict_free_ = false;
     nnz_lower_ = nnz_diag_ = nrows_left_ = nconflicts_ = ncolors_ = 0;
     rowptr_sym_ = colind_sym_ = nullptr;
     values_sym_ = diagonal_ = nullptr;
@@ -275,7 +278,8 @@ public:
 
   virtual bool tune(Kernel k, Tuning t) override {
     if (t == Tuning::None) {
-      spmv_fn = boost::bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_vanilla, this, _1, _2);
+      spmv_fn =
+          boost::bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_vanilla, this, _1, _2);
       return false;
     }
 
@@ -285,21 +289,30 @@ public:
 #endif
       compress_symmetry();
       if (nthreads_ == 1) {
-	spmv_fn = boost::bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_sym_serial, this, _1, _2);
+        spmv_fn = boost::bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_sym_serial,
+                              this, _1, _2);
       } else {
-	if (atomics_)
-	  spmv_fn = boost::bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_sym_atomics, this, _1, _2);
-	else if (effective_ranges_)
-	  spmv_fn = boost::bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_sym_effective_ranges, this, _1, _2);
-	else if (explicit_conflicts_)
-	  spmv_fn = boost::bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_sym_explicit_conflicts, this, _1, _2);
-	else if (conflict_free_)
-	  spmv_fn = boost::bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free, this, _1, _2);
-	else 
-	  assert(false);
+        if (atomics_)
+          spmv_fn = boost::bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_sym_atomics,
+                                this, _1, _2);
+        else if (effective_ranges_)
+          spmv_fn = boost::bind(
+              &CSRMatrix<IndexT, ValueT>::cpu_mv_sym_effective_ranges, this, _1,
+              _2);
+        else if (explicit_conflicts_)
+          spmv_fn = boost::bind(
+              &CSRMatrix<IndexT, ValueT>::cpu_mv_sym_explicit_conflicts, this,
+              _1, _2);
+        else if (conflict_free_)
+          spmv_fn =
+              boost::bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free,
+                          this, _1, _2);
+        else
+          assert(false);
       }
     } else {
-      spmv_fn = boost::bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_split_nnz, this, _1, _2);
+      spmv_fn = boost::bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_split_nnz, this,
+                            _1, _2);
     }
 
     return true;
@@ -394,18 +407,25 @@ private:
 
   // Symmetric kernels
   void cpu_mv_sym_serial(ValueT *__restrict y, const ValueT *__restrict x);
-  void cpu_mv_sym_atomics(ValueT *__restrict y, const ValueT *__restrict x);  
-  void cpu_mv_sym_effective_ranges(ValueT *__restrict y, const ValueT *__restrict x);
-  void cpu_mv_sym_explicit_conflicts(ValueT *__restrict y, const ValueT *__restrict x);
-  void cpu_mv_sym_conflict_free_apriori(ValueT *__restrict y, const ValueT *__restrict x);
-  void cpu_mv_sym_conflict_free(ValueT *__restrict y, const ValueT *__restrict x);
-  void cpu_mv_sym_conflict_free_hyb_bw(ValueT *__restrict y, const ValueT *__restrict x);
+  void cpu_mv_sym_atomics(ValueT *__restrict y, const ValueT *__restrict x);
+  void cpu_mv_sym_effective_ranges(ValueT *__restrict y,
+                                   const ValueT *__restrict x);
+  void cpu_mv_sym_explicit_conflicts(ValueT *__restrict y,
+                                     const ValueT *__restrict x);
+  void cpu_mv_sym_conflict_free_apriori(ValueT *__restrict y,
+                                        const ValueT *__restrict x);
+  void cpu_mv_sym_conflict_free(ValueT *__restrict y,
+                                const ValueT *__restrict x);
+  void cpu_mv_sym_conflict_free_hyb_bw(ValueT *__restrict y,
+                                       const ValueT *__restrict x);
 
   /*
    * Benchmarks for conflict-free SpMV
    */
-  void bench_conflict_free_nobarrier(ValueT *__restrict y, const ValueT *__restrict x);
-  void bench_conflict_free_nobarrier_noxmiss(ValueT *__restrict y, const ValueT *__restrict x);  
+  void bench_conflict_free_nobarrier(ValueT *__restrict y,
+                                     const ValueT *__restrict x);
+  void bench_conflict_free_nobarrier_noxmiss(ValueT *__restrict y,
+                                             const ValueT *__restrict x);
 };
 
 template <typename IndexT, typename ValueT>
@@ -522,14 +542,15 @@ void CSRMatrix<IndexT, ValueT>::reorder() {
 template <typename IndexT, typename ValueT>
 void CSRMatrix<IndexT, ValueT>::split_by_bandwidth() {
 #ifdef _LOG_INFO
-  cout << "[INFO]: clustering matrix into low and high bandwidth nonzeros" << endl;
+  cout << "[INFO]: clustering matrix into low and high bandwidth nonzeros"
+       << endl;
 #endif
 
   vector<IndexT> rowptr_low(nrows_ + 1, 0);
   map<IndexT, IndexT> rowind;
   vector<IndexT> colind_low, colind_high;
   vector<ValueT> values_low, values_high;
-  const int THRESHOLD = 20000;
+  const int THRESHOLD = 10000;
 
   rowptr_low[0] = 0;
   for (int i = 0; i < nrows_; ++i) {
@@ -606,7 +627,8 @@ void CSRMatrix<IndexT, ValueT>::split_by_bandwidth() {
 template <typename IndexT, typename ValueT>
 void CSRMatrix<IndexT, ValueT>::split_by_nrows(int nthreads) {
 #ifdef _LOG_INFO
-  cout << "[INFO]: splitting matrix into " << nthreads << " partitions by rows" << endl;
+  cout << "[INFO]: splitting matrix into " << nthreads << " partitions by rows"
+       << endl;
 #endif
 
   if (!row_split_) {
@@ -879,7 +901,7 @@ void CSRMatrix<IndexT, ValueT>::count_conflicting_rows() {
   cout << "[INFO]: detected " << cnfl_mean << " mean direct conflicts" << endl;
   cout << "[INFO]: detected " << cnfl_total << " total direct conflicts"
        << endl;
-  
+
   for (int tid = 1; tid < nthreads_; ++tid)
     cnfl[tid - 1].clear();
 }
@@ -1027,7 +1049,7 @@ void CSRMatrix<IndexT, ValueT>::explicit_conflicts() {
       // If we have exceeded the number of threads, assigned what is left to
       // last thread
       if (tid == nthreads_ - 1) {
-	data->map_end_ = ncnfls;
+        data->map_end_ = ncnfls;
         break;
       } else {
         total_count -= tmp_count;
@@ -1093,7 +1115,7 @@ void CSRMatrix<IndexT, ValueT>::count_apriori_conflicts() {
   // conflicts
   cout << "[INFO]: the a priori conflict graph will contain " << cnfl.size()
        << " edges" << endl;
-  
+
   cnfl.clear();
   indirect_cnfl.clear();
 }
@@ -1141,7 +1163,7 @@ void CSRMatrix<IndexT, ValueT>::count_aposteriori_conflicts() {
   // conflicts
   cout << "[INFO]: the a posteriori conflict graph will contain " << cnfl.size()
        << " edges" << endl;
-  
+
   cnfl.clear();
   indirect_cnfl.clear();
 }
@@ -1403,7 +1425,7 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
 
     // Find active row indices per color
     for (int i = row_split_[tid]; i < row_split_[tid + 1]; i++) {
-        rowind[color_map[i / BLK_FACTOR]].push_back(i);
+      rowind[color_map[i / BLK_FACTOR]].push_back(i);
     }
 
     // Detect ranges of consecutive rows
@@ -1485,7 +1507,7 @@ void CSRMatrix<IndexT, ValueT>::natural_vertex_ordering(
 #ifdef _LOG_INFO
   cout << "[INFO]: applying N vertex ordering..." << endl;
 #endif
-  
+
   typedef typename boost::graph_traits<ColoringGraph>::vertex_iterator
       VertexIterator;
   std::pair<VertexIterator, VertexIterator> v = vertices(g);
@@ -1499,7 +1521,7 @@ void CSRMatrix<IndexT, ValueT>::natural_round_robin_vertex_ordering(
 #ifdef _LOG_INFO
   cout << "[INFO]: applying N-RR vertex ordering..." << endl;
 #endif
-  
+
   int cnt = 0, t_cnt = 0;
   while ((unsigned int)cnt < num_vertices(g)) {
     for (int t = 0; t < nthreads_; t++) {
@@ -1522,7 +1544,7 @@ void CSRMatrix<IndexT, ValueT>::smallest_nnz_vertex_ordering(
 #ifdef _LOG_INFO
   cout << "[INFO]: applying SNNZ vertex ordering..." << endl;
 #endif
-  
+
   // Sort rows by increasing number of nonzeros
   std::multimap<size_t, IndexT> row_nnz;
   for (int t = 0; t < nthreads_; ++t) {
@@ -1547,7 +1569,7 @@ void CSRMatrix<IndexT, ValueT>::smallest_nnz_round_robin_vertex_ordering(
 #ifdef _LOG_INFO
   cout << "[INFO]: applying SNNZ-RR vertex ordering..." << endl;
 #endif
-  
+
   // Sort rows by number of nonzeros per thread
   std::multimap<size_t, IndexT> row_nnz[nthreads_];
   for (int t = 0; t < nthreads_; ++t) {
@@ -1584,7 +1606,7 @@ void CSRMatrix<IndexT, ValueT>::largest_nnz_vertex_ordering(
 #ifdef _LOG_INFO
   cout << "[INFO]: applying LNNZ vertex ordering..." << endl;
 #endif
-  
+
   // Sort rows by decreasing number of nonzeros
   std::multimap<size_t, IndexT> row_nnz;
   for (int t = 0; t < nthreads_; ++t) {
@@ -1609,7 +1631,7 @@ void CSRMatrix<IndexT, ValueT>::largest_nnz_round_robin_vertex_ordering(
 #ifdef _LOG_INFO
   cout << "[INFO]: applying LNNZ-RR vertex ordering..." << endl;
 #endif
-  
+
   // Sort rows by number of nonzeros per thread
   std::multimap<size_t, IndexT> row_nnz[nthreads_];
   for (int t = 0; t < nthreads_; ++t) {
@@ -1655,9 +1677,9 @@ void CSRMatrix<IndexT, ValueT>::ordering_heuristic(const ColoringGraph &g,
                                                    vector<Vertex> &order) {
   order.reserve(num_vertices(g));
 
-// #ifdef _LOG_INFO
-//   cout << "[INFO]: applying smallest last vertex ordering..." << endl;
-// #endif
+  // #ifdef _LOG_INFO
+  //   cout << "[INFO]: applying smallest last vertex ordering..." << endl;
+  // #endif
   // order = smallest_last_vertex_ordering(g);
   // natural_vertex_ordering(g, order);
   // natural_round_robin_vertex_ordering(g, order);
@@ -1677,19 +1699,19 @@ void CSRMatrix<IndexT, ValueT>::color(const ColoringGraph &g, ColorMap &color) {
        << endl;
 #endif
 
-  // Modify vertex ordering to improve coloring
-  vector<Vertex> order;
-  ordering_heuristic(g, order);
+// Modify vertex ordering to improve coloring
+// vector<Vertex> order;
+// ordering_heuristic(g, order);
 
 #ifdef _LOG_INFO
   float tstart = omp_get_wtime();
 #endif
-  // ncolors_ = sequential_vertex_coloring(g, color);
-  ncolors_ = sequential_vertex_coloring
-    (g, make_iterator_property_map(order.begin(),
-    boost::identity_property_map(),
-    boost::graph_traits<ColoringGraph>::null_vertex()), color);
-#ifdef _LOG_INFO  
+  ncolors_ = sequential_vertex_coloring(g, color);
+// ncolors_ = sequential_vertex_coloring
+//   (g, make_iterator_property_map(order.begin(),
+//   boost::identity_property_map(),
+//   boost::graph_traits<ColoringGraph>::null_vertex()), color);
+#ifdef _LOG_INFO
   float tstop = omp_get_wtime();
   cout << "[INFO]: graph coloring: " << tstop - tstart << endl;
   cout << "[INFO]: using " << ncolors_ << " colors" << endl;
@@ -1763,8 +1785,8 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_serial(ValueT *__restrict y,
 }
 
 template <typename IndexT, typename ValueT>
-void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_atomics(
-    ValueT *__restrict y, const ValueT *__restrict x) {
+void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_atomics(ValueT *__restrict y,
+                                                   const ValueT *__restrict x) {
 
   // Local vectors phase
   #pragma omp parallel num_threads(nthreads_)
@@ -1781,7 +1803,7 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_atomics(
       y[i + row_offset] = diagonal[i] * x[i + row_offset];
     }
     #pragma omp barrier
-    
+
     for (int i = 0; i < data->nrows_; ++i) {
       ValueT y_tmp = 0;
 
@@ -1790,8 +1812,8 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_atomics(
         IndexT col = colind[j];
         ValueT val = values[j];
         y_tmp += val * x[col];
-	#pragma omp atomic
-	y[col] += val * x[i + row_offset];
+        #pragma omp atomic
+        y[col] += val * x[i + row_offset];
       }
 
       /* Reduction on y */
@@ -1869,7 +1891,7 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_explicit_conflicts(
     } else {
       memset(y_local, 0.0, row_split_[tid] * sizeof(ValueT));
     }
-    
+
     for (int i = 0; i < data->nrows_; ++i) {
       ValueT y_tmp = diagonal[i] * x[i + row_offset];
 
@@ -2110,6 +2132,6 @@ void CSRMatrix<IndexT, ValueT>::bench_conflict_free_nobarrier_noxmiss(
     }
   }
 }
-  
+
 } // end of namespace sparse
 } // end of namespace matrix
