@@ -315,13 +315,6 @@ public:
   IndexT *colind() const { return colind_; }
   ValueT *values() const { return values_; }
 
-  // Sparse Matrix - Dense Vector Multiplication microbenchmarks
-  float cpu_mv_bench_baseline(ValueT *__restrict y, const ValueT *__restrict x);
-  float cpu_mv_bench_noimbalance(ValueT *__restrict y,
-                                 const ValueT *__restrict x);
-  float cpu_mv_bench_noxmiss(ValueT *__restrict y, const ValueT *__restrict x);
-  float cpu_mv_bench_nocolind(ValueT *__restrict y, const ValueT *__restrict x);
-
 private:
   Platform platform_;
   int nrows_, ncols_, nnz_, nnz_high_;
