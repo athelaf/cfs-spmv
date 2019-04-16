@@ -7,6 +7,7 @@
 
 #include <boost/bind.hpp>
 #include <boost/function.hpp>
+#include <boost/functional/hash.hpp>
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/bandwidth.hpp>
 #include <boost/graph/copy.hpp>
@@ -93,7 +94,7 @@ struct WeightedVertex {
 
 template <typename IndexT, typename ValueT>
 class CSRMatrix : public SparseMatrix<IndexT, ValueT> {
-  typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::undirectedS,
+  typedef boost::adjacency_list<boost::vecS, boost::vecS, boost::directedS,
                                 WeightedVertex>
       ColoringGraph;
   typedef boost::graph_traits<ColoringGraph>::vertex_descriptor Vertex;
@@ -151,11 +152,11 @@ public:
     values_sym_ = diagonal_ = nullptr;
 
     // Enforce first touch policy
-    #pragma omp parallel for schedule(runtime) num_threads(nthreads_)
+    #pragma omp parallel for schedule(static) num_threads(nthreads_)
     for (int i = 0; i < nrows_ + 1; i++) {
       rowptr_[i] = 0;
     }
-    #pragma omp parallel for schedule(runtime) num_threads(nthreads_)
+    #pragma omp parallel for schedule(static) num_threads(nthreads_)
     for (int i = 0; i < nnz_; i++) {
       colind_[i] = 0;
       values_[i] = 0.0;
@@ -247,6 +248,7 @@ public:
     for (size_t i = 0; i < sym_cmp_data_.size(); ++i)
       delete sym_cmp_data_[i];
     sym_cmp_data_.clear();
+    sym_cmp_data_.shrink_to_fit();
   }
 
   virtual int nrows() const override { return nrows_; }
@@ -490,7 +492,7 @@ void CSRMatrix<IndexT, ValueT>::reorder() {
   IndexT *new_rowptr =
       (IndexT *)internal_alloc((nrows_ + 1) * sizeof(IndexT), platform_);
   // Enforce first touch policy
-  #pragma omp parallel for schedule(runtime) num_threads(nthreads_)
+  #pragma omp parallel for schedule(static) num_threads(nthreads_)
   for (int i = 1; i <= nrows_; ++i) {
     new_rowptr[i] = row_nnz[i - 1];
   }
@@ -508,7 +510,7 @@ void CSRMatrix<IndexT, ValueT>::reorder() {
       (ValueT *)internal_alloc(nnz_ * sizeof(ValueT), platform_);
 
   // Enforce first touch policy
-  #pragma omp parallel for schedule(runtime) num_threads(nthreads_)
+  #pragma omp parallel for schedule(static) num_threads(nthreads_)
   for (int i = 0; i < nnz_; i++) {
     new_colind[i] = 0;
     new_values[i] = 0.0;
@@ -580,12 +582,12 @@ void CSRMatrix<IndexT, ValueT>::split_by_bandwidth() {
   move(colind_low.begin(), colind_low.end(), colind_);
   move(values_low.begin(), values_low.end(), values_);
 
-  #pragma omp parallel for schedule(runtime) num_threads(nthreads_)
+  #pragma omp parallel for schedule(static) num_threads(nthreads_)
   for (int i = 0; i <= nrows_; i++) {
     rowptr_[i] = rowptr_low[i];
   }
 
-  #pragma omp parallel for schedule(runtime) num_threads(nthreads_)
+  #pragma omp parallel for schedule(static) num_threads(nthreads_)
   for (int i = 0; i < nnz_; i++) {
     colind_[i] = colind_low[i];
     values_[i] = values_low[i];
@@ -601,7 +603,7 @@ void CSRMatrix<IndexT, ValueT>::split_by_bandwidth() {
   values_high_ =
       (ValueT *)internal_alloc(nnz_high_ * sizeof(ValueT), platform_);
 
-  #pragma omp parallel for schedule(runtime) num_threads(nthreads_)
+  #pragma omp parallel for schedule(static) num_threads(nthreads_)
   for (int i = 0; i <= nrows_left_; i++) {
     rowptr_high_[i] = 0;
   }
@@ -617,7 +619,7 @@ void CSRMatrix<IndexT, ValueT>::split_by_bandwidth() {
   }
   assert(rowptr_high_[nrows_left_] == nnz_high_);
 
-  #pragma omp parallel for schedule(runtime) num_threads(nthreads_)
+  #pragma omp parallel for schedule(static) num_threads(nthreads_)
   for (int i = 0; i < nnz_high_; i++) {
     colind_high_[i] = colind_high[i];
     values_high_[i] = values_high[i];
@@ -738,7 +740,11 @@ void CSRMatrix<IndexT, ValueT>::atomics() {
 
     vector<IndexT> colind_sym;
     vector<ValueT> values_sym;
-    size_t nnz_diag = 0;
+    int nnz_diag = 0;
+    int nnz_estimated =
+        (rowptr_[row_split_[tid + 1]] - rowptr_[row_split_[tid]]) / 2;
+    colind_sym.reserve(nnz_estimated);
+    values_sym.reserve(nnz_estimated);
 
     data->rowptr_[0] = 0;
     for (int i = row_split_[tid]; i < row_split_[tid + 1]; ++i) {
@@ -778,6 +784,8 @@ void CSRMatrix<IndexT, ValueT>::atomics() {
     // Cleanup
     colind_sym.clear();
     values_sym.clear();
+    colind_sym.shrink_to_fit();
+    values_sym.shrink_to_fit();
   }
 
   for (int tid = 0; tid < nthreads_; ++tid) {
@@ -818,7 +826,11 @@ void CSRMatrix<IndexT, ValueT>::effective_ranges() {
 
     vector<IndexT> colind_sym;
     vector<ValueT> values_sym;
-    size_t nnz_diag = 0;
+    int nnz_diag = 0;
+    int nnz_estimated =
+        (rowptr_[row_split_[tid + 1]] - rowptr_[row_split_[tid]]) / 2;
+    colind_sym.reserve(nnz_estimated);
+    values_sym.reserve(nnz_estimated);
 
     data->rowptr_[0] = 0;
     for (int i = row_split_[tid]; i < row_split_[tid + 1]; ++i) {
@@ -864,6 +876,8 @@ void CSRMatrix<IndexT, ValueT>::effective_ranges() {
     // Cleanup
     colind_sym.clear();
     values_sym.clear();
+    colind_sym.shrink_to_fit();
+    values_sym.shrink_to_fit();
   }
 
   for (int tid = 0; tid < nthreads_; ++tid) {
@@ -933,7 +947,11 @@ void CSRMatrix<IndexT, ValueT>::explicit_conflicts() {
 
     vector<IndexT> colind_sym;
     vector<ValueT> values_sym;
-    size_t nnz_diag = 0;
+    int nnz_diag = 0;
+    int nnz_estimated =
+        (rowptr_[row_split_[tid + 1]] - rowptr_[row_split_[tid]]) / 2;
+    colind_sym.reserve(nnz_estimated);
+    values_sym.reserve(nnz_estimated);
 
     for (int i = row_split_[tid]; i < row_split_[tid + 1]; ++i) {
       for (int j = rowptr_[i]; j < rowptr_[i + 1]; ++j) {
@@ -981,6 +999,8 @@ void CSRMatrix<IndexT, ValueT>::explicit_conflicts() {
     // Cleanup
     colind_sym.clear();
     values_sym.clear();
+    colind_sym.shrink_to_fit();
+    values_sym.shrink_to_fit();
   }
 
   for (int tid = 0; tid < nthreads_; ++tid) {
@@ -1121,55 +1141,6 @@ void CSRMatrix<IndexT, ValueT>::count_apriori_conflicts() {
 }
 
 template <typename IndexT, typename ValueT>
-void CSRMatrix<IndexT, ValueT>::count_aposteriori_conflicts() {
-  // Sanity check
-  assert(cmp_symmetry_);
-
-  set<pair<IndexT, IndexT>> cnfl;
-  map<IndexT, vector<pair<IndexT, IndexT>>> indirect_cnfl;
-  for (int tid = 0; tid < nthreads_; ++tid) {
-    SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[tid];
-    IndexT row_offset = row_split_[tid];
-    for (int i = row_split_[tid]; i < row_split_[tid + 1]; ++i) {
-      for (int j = data->rowptr_[i - row_offset];
-           j < data->rowptr_[i - row_offset + 1]; ++j) {
-        if (data->colind_[j] < row_split_[tid])
-          cnfl.insert(make_pair(i, data->colind_[j]));
-
-        indirect_cnfl[data->colind_[j]].push_back(make_pair(i, tid));
-      }
-    }
-  }
-
-  int no_direct_cnfl = cnfl.size();
-  int no_indirect_cnfl = 0;
-
-  for (auto &col : indirect_cnfl) {
-    for (auto &row1 : col.second) {
-      for (auto &row2 : col.second) {
-        if (row1.first != row2.first && row1.second != row2.second) {
-          pair<IndexT, IndexT> i_j = make_pair(row1.first, row2.first);
-          cnfl.insert(i_j);
-          no_indirect_cnfl++;
-        }
-      }
-    }
-  }
-
-  cout << "[INFO]: detected " << no_direct_cnfl << " direct conflicts" << endl;
-  cout << "[INFO]: detected " << no_indirect_cnfl << " indirect conflicts"
-       << endl;
-  // The number of edges in the graph will be the union of direct and indirect
-  // conflicts
-  cout << "[INFO]: the a posteriori conflict graph will contain " << cnfl.size()
-       << " edges" << endl;
-
-  cnfl.clear();
-  indirect_cnfl.clear();
-}
-
-// FIXME: NUMA?
-template <typename IndexT, typename ValueT>
 void CSRMatrix<IndexT, ValueT>::conflict_free_apriori() {
   // Sanity check
   assert(symmetric_);
@@ -1186,6 +1157,10 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_apriori() {
 
   vector<IndexT> colind_sym;
   vector<ValueT> values_sym;
+  int nnz_estimated = nnz_ / 2;
+  colind_sym.reserve(nnz_estimated);
+  values_sym.reserve(nnz_estimated);
+
   nnz_diag_ = 0;
   rowptr_sym_[0] = 0;
   for (int tid = 0; tid < nthreads_; ++tid) {
@@ -1214,16 +1189,19 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_apriori() {
   values_sym_ =
       (ValueT *)internal_alloc(nnz_lower_ * sizeof(ValueT), platform_);
 
+  #pragma omp parallel for schedule(static) num_threads(nthreads_)
   for (int j = 0; j < nnz_lower_; ++j) {
     colind_sym_[j] = colind_sym[j];
     values_sym_[j] = values_sym[j];
   }
 
-  cmp_symmetry_ = true;
-
   // Cleanup
   colind_sym.clear();
   values_sym.clear();
+  colind_sym.shrink_to_fit();
+  values_sym.shrink_to_fit();
+
+  cmp_symmetry_ = true;
 
   if (nthreads_ == 1)
     return;
@@ -1307,6 +1285,54 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_apriori() {
 }
 
 template <typename IndexT, typename ValueT>
+void CSRMatrix<IndexT, ValueT>::count_aposteriori_conflicts() {
+  // Sanity check
+  assert(cmp_symmetry_);
+
+  set<pair<IndexT, IndexT>> cnfl;
+  map<IndexT, vector<pair<IndexT, IndexT>>> indirect_cnfl;
+  for (int tid = 0; tid < nthreads_; ++tid) {
+    SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[tid];
+    IndexT row_offset = row_split_[tid];
+    for (int i = row_split_[tid]; i < row_split_[tid + 1]; ++i) {
+      for (int j = data->rowptr_[i - row_offset];
+           j < data->rowptr_[i - row_offset + 1]; ++j) {
+        if (data->colind_[j] < row_split_[tid])
+          cnfl.insert(make_pair(i, data->colind_[j]));
+
+        indirect_cnfl[data->colind_[j]].emplace_back(make_pair(i, tid));
+      }
+    }
+  }
+
+  int no_direct_cnfl = cnfl.size();
+  int no_indirect_cnfl = 0;
+
+  for (auto &col : indirect_cnfl) {
+    for (auto &row1 : col.second) {
+      for (auto &row2 : col.second) {
+        if (row1.first != row2.first && row1.second != row2.second) {
+          pair<IndexT, IndexT> i_j = make_pair(row1.first, row2.first);
+          cnfl.insert(i_j);
+          no_indirect_cnfl++;
+        }
+      }
+    }
+  }
+
+  cout << "[INFO]: detected " << no_direct_cnfl << " direct conflicts" << endl;
+  cout << "[INFO]: detected " << no_indirect_cnfl << " indirect conflicts"
+       << endl;
+  // The number of edges in the graph will be the union of direct and indirect
+  // conflicts
+  cout << "[INFO]: the a posteriori conflict graph will contain " << cnfl.size()
+       << " edges" << endl;
+
+  cnfl.clear();
+  indirect_cnfl.clear();
+}
+
+template <typename IndexT, typename ValueT>
 void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
   // Sanity check
   assert(symmetric_);
@@ -1317,7 +1343,6 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
        << endl;
 #endif
 
-  ColoringGraph g(ceil(nrows_ / (double)BLK_FACTOR));
 #ifdef _LOG_INFO
   double tstart, tstop;
   tstart = omp_get_wtime();
@@ -1338,7 +1363,11 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
 
     vector<IndexT> colind_sym;
     vector<ValueT> values_sym;
-    size_t nnz_diag = 0;
+    int nnz_diag = 0;
+    int nnz_estimated =
+        (rowptr_[row_split_[tid + 1]] - rowptr_[row_split_[tid]]) / 2;
+    colind_sym.reserve(nnz_estimated);
+    values_sym.reserve(nnz_estimated);
 
     data->rowptr_[0] = 0;
     for (int i = row_split_[tid]; i < row_split_[tid + 1]; ++i) {
@@ -1373,6 +1402,8 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
     // Cleanup
     colind_sym.clear();
     values_sym.clear();
+    colind_sym.shrink_to_fit();
+    values_sym.shrink_to_fit();
   }
 
   for (int tid = 0; tid < nthreads_; ++tid) {
@@ -1388,6 +1419,7 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
   // Find number of conflicts
   // count_aposteriori_conflicts();
 
+  ColoringGraph g(ceil(nrows_ / (double)BLK_FACTOR));
   vector<vector<pair<int, int>>> indirect_cnfl(nrows_);
   for (int t = 0; t < nthreads_; t++) {
     SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[t];
@@ -1402,13 +1434,17 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
           add_edge(i / BLK_FACTOR, col / BLK_FACTOR, g);
         }
 
-        for (auto &row : indirect_cnfl[col])
-          if (row.second != t)
-            add_edge(row.first / BLK_FACTOR, i / BLK_FACTOR, g);
+        // Mark potential indirect conflict
         indirect_cnfl[col].emplace_back(make_pair(i, t));
       }
     }
   }
+
+  for (const auto &row : indirect_cnfl)
+    for (const auto &elem1 : row)
+      for (auto &elem2 : row)
+        if (elem1.second != elem2.second)
+          add_edge(elem1.first / BLK_FACTOR, elem2.first / BLK_FACTOR, g);
 
   // Run graph coloring
   vector<vertices_size_type> color_vec(num_vertices(g));
@@ -1457,6 +1493,7 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
     }
 
     rowind.clear();
+    rowind.shrink_to_fit();
 
     // Allocate auxiliary arrays
     data->ncolors_ = ncolors_;
@@ -1721,7 +1758,7 @@ void CSRMatrix<IndexT, ValueT>::color(const ColoringGraph &g, ColorMap &color) {
 template <typename IndexT, typename ValueT>
 void CSRMatrix<IndexT, ValueT>::cpu_mv_vanilla(ValueT *__restrict y,
                                                const ValueT *__restrict x) {
-  #pragma omp parallel for schedule(runtime) num_threads(nthreads_)
+  #pragma omp parallel for schedule(static) num_threads(nthreads_)
   for (int i = 0; i < nrows_; ++i) {
     ValueT y_tmp = 0.0;
 
@@ -1864,7 +1901,7 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_effective_ranges(
   for (int tid = 1; tid < nthreads_; ++tid) {
     SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[tid];
     ValueT *y_local = data->local_vector_;
-    #pragma omp parallel for schedule(runtime) num_threads(nthreads_)
+    #pragma omp parallel for schedule(static) num_threads(nthreads_)
     for (IndexT i = 0; i < row_split_[tid]; ++i) {
       y[i] += y_local[i];
     }
@@ -1923,7 +1960,7 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free_apriori(
   #pragma omp parallel num_threads(nthreads_)
   {
     for (int c = 0; c < ncolors_; ++c) {
-      #pragma omp for schedule(runtime)
+      #pragma omp for schedule(static)
       for (int i = color_ptr_[c]; i < color_ptr_[c + 1]; ++i) {
         register IndexT row = rowind_[i];
         register ValueT y_tmp = diagonal_[row] * x[row];
@@ -2032,7 +2069,7 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free_hyb_bw(
     }
   }
 
-  #pragma omp parallel for schedule(runtime) num_threads(nthreads_)
+  #pragma omp parallel for schedule(static) num_threads(nthreads_)
   for (IndexT i = 0; i < nrows_left_; ++i) {
     IndexT row = rowind_[i];
     register ValueT y_tmp = 0;
