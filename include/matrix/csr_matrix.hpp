@@ -21,6 +21,8 @@
 
 #include <omp.h>
 
+// #include "tbb/concurrent_vector.h"
+
 #include "io/mmf.hpp"
 #include "utils/allocator.hpp"
 #include "utils/platforms.hpp"
@@ -361,6 +363,7 @@ private:
   ValueT **y_local_;
   vector<SymmetryCompressionData<IndexT, ValueT> *> sym_cmp_data_;
   const int BLK_FACTOR = 1;
+  const int BLK_BITS = 0;
   /*
   * Preprocessing routines
   */
@@ -387,6 +390,10 @@ private:
   void conflict_free_aposteriori();
   void count_aposteriori_conflicts();
   // Common utilities for methods 4 & 5
+  // void color(tbb::concurrent_vector<tbb::concurrent_vector<int>> &g,
+  //            vector<int> &color);
+  // void parallel_color(tbb::concurrent_vector<tbb::concurrent_vector<int>> &g,
+  //                     tbb::concurrent_vector<int> &color);
   void color(const ColoringGraph &g, ColorMap &color);
   void ordering_heuristic(const ColoringGraph &g, vector<Vertex> &order);
   void natural_vertex_ordering(const ColoringGraph &g, vector<Vertex> &order);
@@ -1451,6 +1458,66 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
   ColorMap color_map(&color_vec.front(), get(boost::vertex_index, g));
   color(g, color_map);
 
+  // #ifdef _LOG_INFO
+  //   float assembly_start = omp_get_wtime();
+  // #endif
+  //   tbb::concurrent_vector<tbb::concurrent_vector<int>> g(
+  //       ceil(nrows_ / (double)BLK_FACTOR));
+  //   tbb::concurrent_vector<tbb::concurrent_vector<pair<int, int>>> indirect(
+  //       ceil(nrows_ / (double)BLK_FACTOR));
+  //   #pragma omp parallel
+  //   {
+  //     int t = omp_get_thread_num();
+  //     SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[t];
+  //     IndexT row_offset = row_split_[t];
+  //     for (int i = row_split_[t]; i < row_split_[t + 1]; i++) {
+  //       IndexT blk_row = i >> BLK_BITS;
+  //       IndexT prev_blk_col = -1;
+  //       for (int j = data->rowptr_[i - row_offset];
+  //            j < data->rowptr_[i + 1 - row_offset]; ++j) {
+  //         IndexT col = data->colind_[j];
+  //         IndexT blk_col = col >> BLK_BITS;
+  //         // If this nonzero is in the lower triangular part and has a direct
+  //         // conflict with another thread
+  //         if (col < row_offset) {
+  //           g[blk_row].push_back(blk_col);
+  //           g[blk_col].push_back(blk_row);
+  //         }
+
+  //         // Mark potential indirect conflicts
+  //         if (blk_col != prev_blk_col)
+  //           indirect[blk_col].push_back(make_pair(blk_row, t));
+  //         prev_blk_col = blk_col;
+  //       }
+  //     }
+
+  //     #pragma omp barrier
+
+  //     int row_start = row_split_[t] >> BLK_BITS;
+  //     int row_end = row_split_[t + 1] >> BLK_BITS;
+  //     for (int i = row_start; i < row_end; i++) {
+  //       for (const auto &row1 : indirect[i]) {
+  //         for (const auto &row2 : indirect[i]) {
+  //           if ((row1.first < row2.first) && (row1.second != row2.second)) {
+  //             g[row1.first].push_back(row2.first);
+  //             g[row2.first].push_back(row1.first);
+  //           }
+  //         }
+  //       }
+  //     }
+  //   }
+
+  // #ifdef _LOG_INFO
+  //   float assembly_stop = omp_get_wtime();
+  //   cout << "[INFO]: graph assembly: " << assembly_stop - assembly_start <<
+  //   endl;
+  // #endif
+
+  //   const int V = g.size();
+  //   tbb::concurrent_vector<int> color_map(V, V - 1);
+  //   //color(g, color_map);
+  //   parallel_color(g, color_map);
+
   // Find row sets per thread per color
   #pragma omp parallel num_threads(nthreads_)
   {
@@ -1461,7 +1528,7 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
 
     // Find active row indices per color
     for (int i = row_split_[tid]; i < row_split_[tid + 1]; i++) {
-      rowind[color_map[i / BLK_FACTOR]].push_back(i);
+      rowind[color_map[i >> BLK_BITS]].push_back(i);
     }
 
     // Detect ranges of consecutive rows
@@ -1754,6 +1821,164 @@ void CSRMatrix<IndexT, ValueT>::color(const ColoringGraph &g, ColorMap &color) {
   cout << "[INFO]: using " << ncolors_ << " colors" << endl;
 #endif
 }
+
+// template <typename IndexT, typename ValueT>
+// void CSRMatrix<IndexT, ValueT>::color(
+//     tbb::concurrent_vector<tbb::concurrent_vector<int>> &g,
+//     vector<int> &color) {
+//   assert(symmetric_ && cmp_symmetry_);
+// #ifdef _LOG_INFO
+//   cout << "[INFO]: applying graph coloring to detect conflict-free submatrices"
+//        << endl;
+//   float color_start = omp_get_wtime();
+// #endif
+
+//   // Modify vertex ordering to improve coloring
+//   // vector<Vertex> order;
+//   // ordering_heuristic(g, order);
+
+//   const int V = g.size();
+//   int max_color = 0;
+
+//   // We need to keep track of which colors are used by
+//   // adjacent vertices. We do this by marking the colors
+//   // that are used. The mark array contains the mark
+//   // for each color. The length of mark is the
+//   // number of vertices since the maximum possible number of colors
+//   // is the number of vertices.
+//   vector<int> mark(V, numeric_limits<int>::max());
+
+//   // Determine the color for every vertex one by one
+//   for (int i = 0; i < V; i++) {
+//     const auto &neighbors = g[i];
+
+//     // Mark the colors of vertices adjacent to current.
+//     // i can be the value for marking since i increases successively
+//     for (size_t j = 0; j < neighbors.size(); j++)
+//       mark[color[neighbors[j]]] = i;
+
+//     // Next step is to assign the smallest un-marked color
+//     // to the current vertex.
+//     int j = 0;
+
+//     // Scan through all useable colors, find the smallest possible
+//     // color that is not used by neighbors.  Note that if mark[j]
+//     // is equal to i, color j is used by one of the current vertex's
+//     // neighbors.
+//     while (j < max_color && mark[j] == i)
+//       ++j;
+
+//     if (j == max_color) // All colors are used up. Add one more color
+//       ++max_color;
+
+//     // At this point, j is the smallest possible color
+//     color[i] = j; // Save the color of vertex current
+//   }
+
+//   ncolors_ = max_color;
+
+// #ifdef _LOG_INFO
+//   float color_stop = omp_get_wtime();
+//   cout << "[INFO]: graph coloring: " << color_stop - color_start << endl;
+//   cout << "[INFO]: using " << ncolors_ << " colors" << endl;
+// #endif
+// }
+
+// template <typename IndexT, typename ValueT>
+// void CSRMatrix<IndexT, ValueT>::parallel_color(
+//     tbb::concurrent_vector<tbb::concurrent_vector<int>> &g,
+//     tbb::concurrent_vector<int> &color) {
+//   assert(symmetric_ && cmp_symmetry_);
+// #ifdef _LOG_INFO
+//   cout << "[INFO]: applying graph coloring to detect conflict-free submatrices"
+//        << endl;
+//   float color_start = omp_get_wtime();
+// #endif
+
+//   // Modify vertex ordering to improve coloring
+//   // vector<Vertex> order;
+//   // ordering_heuristic(g, order);
+
+//   const int V = g.size();
+//   vector<int> uncolored(V);
+//   vector<int> mark(V, numeric_limits<int>::max());
+
+//   #pragma omp parallel for schedule(static)
+//   for (int i = 0; i < V; i++) {
+//     uncolored[i] = i;
+//   }
+
+//   int max_color_global = 0;
+//   int max_color[nthreads_] = {0};
+//   int U = V;
+//   while (U > 0) {
+//     // Phase 1: tentative coloring
+//     #pragma omp barrier
+//     #pragma omp parallel for firstprivate(mark) schedule(static)
+//     for (int i = 0; i < U; i++) {
+//       int tid = omp_get_thread_num();
+//       int current = uncolored[i];
+//       const auto &neighbors = g[current];
+
+//       // We need to keep track of which colors are used by adjacent vertices. We
+//       // do this by marking the colors that are used.
+//       // unordered_map<int, int> mark;
+//       for (size_t j = 0; j < neighbors.size(); j++)
+//         mark[color[neighbors[j]]] = current;
+
+//       // Next step is to assign the smallest un-marked color to the current
+//       // vertex.
+//       int j = 0;
+
+//       // Find the smallest possible color that is not used by neighbors.
+//       while (j < max_color[tid] && mark[j] == current)
+//         ++j;
+
+//       // All colors are used up. Add one more color.
+//       if (j == max_color[tid])
+//         ++max_color[tid];
+
+//       // At this point, j is the smallest possible color. Save the color of
+//       // vertex current.
+//       color[current] = j; // Save the color of vertex current
+//     }
+
+//     for (int i = 0; i < nthreads_; i++) {
+//       if (max_color[i] > max_color_global) {
+//         max_color_global = max_color[i];
+//       }
+//       max_color[i] = max_color_global;
+//     }
+
+//     // Phase 2: conflict detection
+//     #pragma omp barrier
+//     #pragma omp parallel for schedule(static)
+//     for (int i = 0; i < U; i++) {
+//       int current = uncolored[i];
+//       const auto &neighbors = g[current];
+//       for (size_t j = 0; j < neighbors.size(); j++)
+//         if ((color[neighbors[j]] == color[current]) && (current > neighbors[j]))
+//           color[current] = V - 1;
+//     }
+
+//     int tail = 0;
+//     for (int i = 0; i < U; i++) {
+//       if (color[uncolored[i]] == V - 1) {
+//         uncolored[tail++] = uncolored[i];
+//       }
+//     }
+
+//     U = tail;
+//   }
+
+//   ncolors_ = max_color_global;
+
+// #ifdef _LOG_INFO
+//   float color_stop = omp_get_wtime();
+//   cout << "[INFO]: graph coloring: " << color_stop - color_start << endl;
+//   cout << "[INFO]: using " << ncolors_ << " colors" << endl;
+// #endif
+// }
 
 template <typename IndexT, typename ValueT>
 void CSRMatrix<IndexT, ValueT>::cpu_mv_vanilla(ValueT *__restrict y,
