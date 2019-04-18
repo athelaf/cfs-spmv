@@ -13,4 +13,4 @@ Generic options include:
 
 How to compile:
 * GCC: make all
-* Intel ICPC: INTEL_ROOT=<path_to_intel_root> make -f Makefile.intel all
+* Intel ICC: INTEL_ROOT=<path_to_intel_root> make -f Makefile.intel all
