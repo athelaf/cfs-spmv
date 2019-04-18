@@ -7,7 +7,7 @@
 # Compilation
 Generic options include:
 * LOG=1 to enable logging 
-* USE_DOUBLE=1 to enable double precision computations
+* USE_DOUBLE=1 to enable double-precision floating-point computations
 * MKL=1 to enable benchmarking of Intel MKL (you may need to set MKL_ROOT to the correct path)
 * RSB=1 to enable benchmarking of librsb (you may need to set RSB_ROOT to the correct path)
 
