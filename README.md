@@ -2,6 +2,7 @@
 # Dependencies
 * Boost Graph Library
 * OpenMP
+* Intel Thread Building Blocks
 * C++ compiler with c++14 support
 
 # Compilation
