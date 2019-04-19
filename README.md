@@ -2,7 +2,7 @@
 # Dependencies
 * Boost Graph Library
 * OpenMP
-* Intel Thread Building Blocks
+* Intel(R) Threading Building Blocks
 * C++ compiler with c++14 support
 
 # Compilation
@@ -14,4 +14,4 @@ Generic options include:
 
 How to compile:
 * GNU C/C++: make all
-* Intel C/C++: INTEL_ROOT=<path_to_intel_root> make -f Makefile.intel all
+* Intel(R) C/C++: INTEL_ROOT=<path_to_intel_root> make -f Makefile.intel all
