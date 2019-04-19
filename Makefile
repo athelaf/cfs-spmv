@@ -6,7 +6,7 @@ CXX ?= g++
 CXXFLAGS := -std=c++14 -Wall -fPIC -fopenmp
 CPPFLAGS :=
 LDFLAGS :=
-LIBS := -lgomp
+LIBS := -lgomp -ltbb
 
 # Boost
 CPPFLAGS += -I$(BOOST_DIR)/include
