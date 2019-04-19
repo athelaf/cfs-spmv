@@ -13,5 +13,5 @@ Generic options include:
 * RSB=1 to enable benchmarking of librsb (you may need to set RSB_ROOT to the correct path)
 
 How to compile:
-* GCC: make all
-* Intel ICC: INTEL_ROOT=<path_to_intel_root> make -f Makefile.intel all
+* GNU C/C++: make all
+* Intel C/C++: INTEL_ROOT=<path_to_intel_root> make -f Makefile.intel all
