@@ -4,7 +4,6 @@ PROGRAMS = bench_spmv_mmf_cpu
 
 CPPFLAGS += -I../include
 LDFLAGS += -L../src
-LIBS += -lsparse
 
 ifeq ($(OPENBLAS), 1)
 	CPPFLAGS += -I$(OPENBLAS_ROOT)/include -D_OPENBLAS
@@ -35,7 +34,7 @@ LINK = $(CXX) $(LDFLAGS)
 	$(COMPILE) -c -o $@ $<
 
 bench_spmv_mmf_cpu: bench_spmv_mmf_cpu.o
-	$(LINK) $^ -o $@ $(LIBS)
+	$(LINK) $^ -o $@ -lsparse $(LIBS)
 
 all: $(PROGRAMS)
 
