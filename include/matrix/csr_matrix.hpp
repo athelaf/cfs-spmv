@@ -114,8 +114,8 @@ public:
 
   // Initialize CSR from an MMF file
   CSRMatrix(const string &filename, Platform platform = Platform::cpu,
-            bool symmetric = false)
-      : platform_(platform), owns_data_(true) {
+            bool symmetric = false, bool hybrid = false)
+      : platform_(platform), hybrid_(hybrid), owns_data_(true) {
     MMF<IndexT, ValueT> mmf(filename);
     symmetric_ = mmf.IsSymmetric();
     if (!symmetric) {
@@ -202,17 +202,17 @@ public:
     assert(val_i == nnz_);
 
     // reorder();
-    // if (nthreads_ > 1)
-    //   split_by_bandwidth();
+    if (nthreads_ > 1 && hybrid_)
+      split_by_bandwidth();
     split_by_nnz(nthreads_);
   }
 
   // Initialize CSRMatrix from another CSRMatrix matrix (no ownership)
   CSRMatrix(IndexT *rowptr, IndexT *colind, ValueT *values, IndexT nrows,
-            IndexT ncols, bool symmetric = false,
+            IndexT ncols, bool symmetric = false, bool hybrid = false,
             Platform platform = Platform::cpu)
       : platform_(platform), nrows_(nrows), ncols_(ncols),
-        symmetric_(symmetric), owns_data_(false) {
+        symmetric_(symmetric), hybrid_(hybrid), owns_data_(false) {
     rowptr_ = rowptr;
     colind_ = colind;
     values_ = values;
@@ -229,8 +229,8 @@ public:
     values_sym_ = diagonal_ = nullptr;
 
     // reorder();
-    // if (nthreads_ > 1)
-    //   split_by_bandwidth();
+    if (nthreads_ > 1 && hybrid_)
+      split_by_bandwidth();
     split_by_nnz(nthreads_);
   }
 
@@ -260,7 +260,6 @@ public:
   virtual int nnz() const override { return nnz_; }
   virtual bool symmetric() const override { return symmetric_; }
 
-  // FIXME
   virtual size_t size() const override {
     int size = (nrows_ + 1) * sizeof(IndexT); // rowptr
     size += nnz_ * sizeof(IndexT);            // colind
@@ -271,9 +270,14 @@ public:
 
     if (cmp_symmetry_) {
       size -= nnz_ * sizeof(IndexT);       // colind
-      size += nnz_lower_ * sizeof(IndexT); // colind
       size -= nnz_ * sizeof(ValueT);       // values
+      size += nnz_lower_ * sizeof(IndexT); // colind
       size += nnz_lower_ * sizeof(ValueT); // values
+      if (hybrid_) {
+        size += (nrows_left_ + 1) * sizeof(IndexT); // rowptr_high
+        size += nnz_high_ * sizeof(IndexT);         // colind_high
+        size += nnz_high_ * sizeof(ValueT);         // values_high
+      }
       return size;
     }
 
@@ -337,7 +341,7 @@ public:
 private:
   Platform platform_;
   int nrows_, ncols_, nnz_, nnz_high_;
-  bool symmetric_, owns_data_;
+  bool symmetric_, hybrid_, owns_data_;
   IndexT *rowptr_, *rowind_, *rowptr_high_;
   IndexT *colind_, *colind_high_;
   ValueT *values_, *values_high_;
@@ -366,6 +370,7 @@ private:
   vector<SymmetryCompressionData<IndexT, ValueT> *> sym_cmp_data_;
   const int BLK_FACTOR = 1;
   const int BLK_BITS = 0;
+
   /*
   * Preprocessing routines
   */
@@ -435,8 +440,8 @@ private:
                                         const ValueT *__restrict x);
   void cpu_mv_sym_conflict_free(ValueT *__restrict y,
                                 const ValueT *__restrict x);
-  void cpu_mv_sym_conflict_free_hyb_bw(ValueT *__restrict y,
-                                       const ValueT *__restrict x);
+  void cpu_mv_sym_conflict_free_hyb(ValueT *__restrict y,
+                                    const ValueT *__restrict x);
 
   /*
    * Benchmarks for conflict-free SpMV
@@ -2390,7 +2395,7 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free(
 }
 
 template <typename IndexT, typename ValueT>
-void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free_hyb_bw(
+void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free_hyb(
     ValueT *__restrict y, const ValueT *__restrict x) {
 
   #pragma omp parallel num_threads(nthreads_)
