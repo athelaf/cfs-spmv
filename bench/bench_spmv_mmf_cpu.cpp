@@ -9,8 +9,8 @@
 #endif
 
 #ifdef _RSB
-#include <rsb.h>
 #include <blas_sparse.h>
+#include <rsb.h>
 #endif
 
 #include "kernel/sparse_kernels.hpp"
@@ -37,7 +37,10 @@ static void set_program_name(char *path) {
 }
 
 static void print_usage() {
-  cout << "Usage: " << program_name << " <mmf_file> <format>(0: COO, 1: CSR, 2:SSS, 3: MKL-CSR, 4: MKL-BSR, 5: RSB) <iterations>" << endl;
+  cout << "Usage: " << program_name
+       << " <mmf_file> <format>(0: COO, 1: CSR, 2:SSS, 3: HYB, 4: MKL-CSR, 5: "
+          "MKL-BSR, 6: RSB) <iterations>"
+       << endl;
 }
 
 int main(int argc, char **argv) {
@@ -50,7 +53,7 @@ int main(int argc, char **argv) {
 
   const string mmf_file(argv[1]);
   int format = atoi(argv[2]);
-  if (format > 5) {
+  if (format > 6) {
     cerr << "Error in arguments!" << endl;
     print_usage();
     exit(1);
@@ -99,20 +102,25 @@ int main(int argc, char **argv) {
     break;
   }
   case 3: {
-    format_string = "MKL-CSR";
+    A = createSparseMatrix<INDEX, VALUE>(mmf_file, Format::hyb);
+    format_string = "HYB";
     break;
   }
   case 4: {
-    format_string = "MKL-BSR";
+    format_string = "MKL-CSR";
     break;
   }
   case 5: {
+    format_string = "MKL-BSR";
+    break;
+  }
+  case 6: {
     format_string = "RSB";
     break;
   }
   }
 
-  if (format < 3) {
+  if (format < 4) {
     tstart = omp_get_wtime();
     SpDMV<INDEX, VALUE> spdmv(A);
     tstop = omp_get_wtime();
@@ -135,7 +143,6 @@ int main(int argc, char **argv) {
       spdmv(y, M, x, N);
     tstop = omp_get_wtime();
     compute_time = tstop - tstart;
-
     gflops = ((double)loops * 2 * nnz * 1.e-9) / compute_time;
     cout << setprecision(4) << "matrix: " << basename(mmf_file.c_str())
          << " format: " << format_string << " preproc(sec): " << preproc_time
