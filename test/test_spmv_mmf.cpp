@@ -23,7 +23,8 @@ static void set_program_name(char *path) {
 }
 
 static void print_usage() {
-  cout << "Usage: " << program_name << " <mmf_file> <format>(0: COO, 1: CSR, 2:SSS)" << endl;
+  cout << "Usage: " << program_name
+       << " <mmf_file> <format>(0: COO, 1: CSR, 2:SSS)" << endl;
 }
 
 int main(int argc, char **argv) {
@@ -36,12 +37,12 @@ int main(int argc, char **argv) {
 
   const string mmf_file(argv[1]);
   int fmt = atoi(argv[2]);
-  if (fmt > 2) {
+  if (fmt > 3) {
     cerr << "Error in arguments!" << endl;
     print_usage();
     exit(1);
   }
-  
+
   // Load a sparse matrix from an MMF file
   SparseMatrix<INDEX, VALUE> *A = nullptr;
   switch (fmt) {
@@ -53,6 +54,9 @@ int main(int argc, char **argv) {
     break;
   case 2:
     A = createSparseMatrix<INDEX, VALUE>(mmf_file, Format::sss);
+    break;
+  case 3:
+    A = createSparseMatrix<INDEX, VALUE>(mmf_file, Format::hyb);
     break;
   default:
     break;
