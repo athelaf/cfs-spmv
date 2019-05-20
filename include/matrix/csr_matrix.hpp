@@ -313,7 +313,11 @@ public:
           spmv_fn = boost::bind(
               &CSRMatrix<IndexT, ValueT>::cpu_mv_sym_explicit_conflicts, this,
               _1, _2);
-        else if (conflict_free_)
+        else if (conflict_free_ && hybrid_)
+          spmv_fn = boost::bind(
+              &CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free_hyb, this,
+              _1, _2);
+        else if (conflict_free_ && !hybrid_)
           spmv_fn =
               boost::bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free,
                           this, _1, _2);
@@ -2436,20 +2440,20 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free_hyb(
 
       #pragma omp barrier
     }
-  }
 
-  #pragma omp parallel for schedule(static) num_threads(nthreads_)
-  for (IndexT i = 0; i < nrows_left_; ++i) {
-    IndexT row = rowind_[i];
-    register ValueT y_tmp = 0;
+    #pragma omp for schedule(static)
+    for (IndexT i = 0; i < nrows_left_; ++i) {
+      IndexT row = rowind_[i];
+      register ValueT y_tmp = 0;
 
-    PRAGMA_IVDEP
-    for (IndexT j = rowptr_high_[i]; j < rowptr_high_[i + 1]; ++j) {
-      y_tmp += values_high_[j] * x[colind_high_[j]];
+      PRAGMA_IVDEP
+      for (IndexT j = rowptr_high_[i]; j < rowptr_high_[i + 1]; ++j) {
+        y_tmp += values_high_[j] * x[colind_high_[j]];
+      }
+
+      /* Reduction on y */
+      y[row] += y_tmp;
     }
-
-    /* Reduction on y */
-    y[row] += y_tmp;
   }
 }
 
