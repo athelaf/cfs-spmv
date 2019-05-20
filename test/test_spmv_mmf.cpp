@@ -24,7 +24,8 @@ static void set_program_name(char *path) {
 
 static void print_usage() {
   cout << "Usage: " << program_name
-       << " <mmf_file> <format>(0: COO, 1: CSR, 2:SSS)" << endl;
+       << " <mmf_file> <format>(0: COO, 1: CSR, 2: CFS-SSS, 3: CFH-SSS)"
+       << endl;
 }
 
 int main(int argc, char **argv) {
