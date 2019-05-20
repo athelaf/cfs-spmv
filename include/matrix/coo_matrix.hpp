@@ -96,7 +96,8 @@ public:
   virtual inline Platform platform() const override { return platform_; }
 
   virtual bool tune(Kernel k, Tuning t) override {
-    spmv_fn = boost::bind(&COOMatrix<IndexT, ValueT>::cpu_mv_vanilla, this, _1, _2);
+    spmv_fn =
+        boost::bind(&COOMatrix<IndexT, ValueT>::cpu_mv_vanilla, this, _1, _2);
     return false;
   }
 
@@ -128,7 +129,7 @@ void COOMatrix<IndexT, ValueT>::cpu_mv_vanilla(ValueT *__restrict y,
   __assume_aligned(y, 64);
   __assume_aligned(x, 64);
 #endif
-  #pragma omp parallel for schedule(runtime)
+  #pragma omp parallel for schedule(static)
   for (IndexT i = 0; i < nnz_; i++) {
     y[rowind_[i]] += values_[i] * x[colind_[i]];
   }
