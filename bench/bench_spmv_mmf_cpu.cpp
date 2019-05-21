@@ -154,7 +154,7 @@ int main(int argc, char **argv) {
     delete A;
   }
 
-  if (format == 3) {
+  if (format == 4) {
 #ifdef _INTEL_MKL
     CSRMatrix<INDEX, VALUE> *A_csr = new CSRMatrix<INDEX, VALUE>(mmf_file);
     VALUE alpha = 1, beta = 0;
@@ -226,7 +226,7 @@ int main(int argc, char **argv) {
 #endif // _INTEL_MKL
   }
 
-  if (format == 4) {
+  if (format == 5) {
 #ifdef _INTEL_MKL
     CSRMatrix<INDEX, VALUE> *A_csr = new CSRMatrix<INDEX, VALUE>(mmf_file);
     sparse_status_t stat;
@@ -301,7 +301,7 @@ int main(int argc, char **argv) {
 #endif // _INTEL_MKL
   }
 
-  if (format == 5) {
+  if (format == 6) {
 #ifdef _RSB
     blas_sparse_matrix A = blas_invalid_handle;
     rsb_type_t typecode = RSB_NUMERICAL_TYPE_DOUBLE;
