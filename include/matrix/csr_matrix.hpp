@@ -1490,7 +1490,7 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
 #endif
   ConcurrentColoringGraph g((int)ceil(nrows_ / (double)BLK_FACTOR));
   tbb::concurrent_vector<tbb::concurrent_vector<pair<int, int>>> indirect(
-      (int)ceil(nrows_ / (double)BLK_FACTOR));
+      nrows_);
   #pragma omp parallel
   {
     int t = omp_get_thread_num();
@@ -1512,15 +1512,15 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
 
         // Mark potential indirect conflicts
         if (blk_col != prev_blk_col)
-          indirect[blk_col].push_back(make_pair(blk_row, t));
+          indirect[col].push_back(make_pair(blk_row, t));
         prev_blk_col = blk_col;
       }
     }
 
     #pragma omp barrier
 
-    int row_start = row_split_[t] >> BLK_BITS;
-    int row_end = row_split_[t + 1] >> BLK_BITS;
+    int row_start = row_split_[t];
+    int row_end = row_split_[t + 1];
     for (int i = row_start; i < row_end; i++) {
       for (const auto &row1 : indirect[i]) {
         for (const auto &row2 : indirect[i]) {
