@@ -9,8 +9,8 @@
 #endif
 
 #ifdef _RSB
-#include <blas_sparse.h>
 #include <rsb.h>
+#include <blas_sparse.h>
 #endif
 
 #include "kernel/sparse_kernels.hpp"
