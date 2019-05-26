@@ -273,23 +273,23 @@ public:
       size += (nthreads_ + 1) * sizeof(IndexT); // row_split
 
     if (cmp_symmetry_) {
-      size -= nnz_ * sizeof(IndexT);       // colind
+      size -= nnz_ * sizeof(IndexT); // colind
       size += nnz_lower_ * sizeof(IndexT);
-      size -= nnz_ * sizeof(ValueT);       // values
+      size -= nnz_ * sizeof(ValueT); // values
       size += nnz_lower_ * sizeof(ValueT);
       size += nnz_diag_ * sizeof(ValueT); // diagonal
       if (effective_ranges_) {
-	for (int t = 0; t < nthreads_; ++t)
-	  size += row_split_[t] * sizeof(ValueT); // local vectors
-      }	else if (local_vectors_indexing_) {
-	for (int t = 0; t < nthreads_; ++t)
-	  size += row_split_[t] * sizeof(ValueT); // local vectors
-	size += 2 * nthreads_ * sizeof(IndexT); // map start/end
-	size += cnfl_map_->length * sizeof(short); // map cpu
-	size += cnfl_map_->length * sizeof(IndexT); // map pos
+        for (int t = 0; t < nthreads_; ++t)
+          size += row_split_[t] * sizeof(ValueT); // local vectors
+      } else if (local_vectors_indexing_) {
+        for (int t = 0; t < nthreads_; ++t)
+          size += row_split_[t] * sizeof(ValueT);   // local vectors
+        size += 2 * nthreads_ * sizeof(IndexT);     // map start/end
+        size += cnfl_map_->length * sizeof(short);  // map cpu
+        size += cnfl_map_->length * sizeof(IndexT); // map pos
       } else if (conflict_free_) {
-	size += (ncolors_ + 1) * sizeof(IndexT); // range_ptr
-	size += 2 * nranges_ * sizeof(IndexT); // range_start/end
+        size += (ncolors_ + 1) * sizeof(IndexT); // range_ptr
+        size += 2 * nranges_ * sizeof(IndexT);   // range_start/end
       } else if (hybrid_) {
         size += (nrows_left_ + 1) * sizeof(IndexT); // rowptr_high
         size += nnz_high_ * sizeof(IndexT);         // colind_high
@@ -328,8 +328,8 @@ public:
               _2);
         else if (local_vectors_indexing_)
           spmv_fn = boost::bind(
-              &CSRMatrix<IndexT, ValueT>::cpu_mv_sym_local_vectors_indexing, this,
-              _1, _2);
+              &CSRMatrix<IndexT, ValueT>::cpu_mv_sym_local_vectors_indexing,
+              this, _1, _2);
         else if (conflict_free_ && hybrid_)
           spmv_fn = boost::bind(
               &CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free_hyb, this,
@@ -458,7 +458,7 @@ private:
   void cpu_mv_sym_effective_ranges(ValueT *__restrict y,
                                    const ValueT *__restrict x);
   void cpu_mv_sym_local_vectors_indexing(ValueT *__restrict y,
-                                     const ValueT *__restrict x);
+                                         const ValueT *__restrict x);
   void cpu_mv_sym_conflict_free_apriori(ValueT *__restrict y,
                                         const ValueT *__restrict x);
   void cpu_mv_sym_conflict_free(ValueT *__restrict y,
@@ -971,7 +971,8 @@ void CSRMatrix<IndexT, ValueT>::local_vectors_indexing() {
   assert(symmetric_);
 
 #ifdef _LOG_INFO
-  cout << "[INFO]: compressing for symmetry using explicit conflicts" << endl;
+  cout << "[INFO]: compressing for symmetry using local vectors indexing"
+       << endl;
 #endif
 
   y_local_ = (ValueT **)internal_alloc(nthreads_ * sizeof(ValueT *), platform_);
@@ -1454,6 +1455,7 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
   for (int tid = 0; tid < nthreads_; ++tid) {
     SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[tid];
     nnz_lower_ += data->nnz_lower_;
+    nnz_diag_ += data->nnz_diag_;
   }
 
   cmp_symmetry_ = true;
@@ -1510,7 +1512,7 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
   ConcurrentColoringGraph g((int)ceil(nrows_ / (double)BLK_FACTOR));
   vector<WeightedVertex> vertices((int)ceil(nrows_ / (double)BLK_FACTOR));
   tbb::concurrent_vector<tbb::concurrent_vector<pair<int, int>>> indirect(
-      nrows_ / (double)BLK_FACTOR));
+      (int)ceil(nrows_ / (double)BLK_FACTOR));
   #pragma omp parallel
   {
     int t = omp_get_thread_num();
@@ -1542,8 +1544,10 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
 
     #pragma omp barrier
 
-    int row_start = row_split_[t];
-    int row_end = row_split_[t + 1];
+    int row_start = row_split_[t] >> BLK_BITS;
+    ;
+    int row_end = row_split_[t + 1] >> BLK_BITS;
+    ;
     for (int i = row_start; i < row_end; i++) {
       for (const auto &row1 : indirect[i]) {
         for (const auto &row2 : indirect[i]) {
@@ -2229,34 +2233,34 @@ void CSRMatrix<IndexT, ValueT>::parallel_color(
       vector<int> mark(V, numeric_limits<int>::max());
       #pragma omp for schedule(static)
       for (int i = 0; i < U; i++) {
-	int tid = omp_get_thread_num();
-	int current = uncolored[i];
-	const auto &neighbors = g[current];
+        int tid = omp_get_thread_num();
+        int current = uncolored[i];
+        const auto &neighbors = g[current];
 
-	// We need to keep track of which colors are used by adjacent vertices.
-	// do this by marking the colors that are used.
-	// unordered_map<int, int> mark;
-	for (size_t j = 0; j < neighbors.size(); j++)
-	  mark[color[neighbors[j]]] = i;
+        // We need to keep track of which colors are used by adjacent vertices.
+        // do this by marking the colors that are used.
+        // unordered_map<int, int> mark;
+        for (size_t j = 0; j < neighbors.size(); j++)
+          mark[color[neighbors[j]]] = i;
 
-	// Next step is to assign the smallest un-marked color to the current
-	// vertex.
-	int j = 0;
+        // Next step is to assign the smallest un-marked color to the current
+        // vertex.
+        int j = 0;
 
-	// Find the smallest possible color that is not used by neighbors.
-	while (j < max_color[tid] && mark[j] == i)
-	  ++j;
+        // Find the smallest possible color that is not used by neighbors.
+        while (j < max_color[tid] && mark[j] == i)
+          ++j;
 
-	// All colors are used up. Add one more color.
-	if (j == max_color[tid])
-	  ++max_color[tid];
+        // All colors are used up. Add one more color.
+        if (j == max_color[tid])
+          ++max_color[tid];
 
-	// At this point, j is the smallest possible color. Save the color of
-	// vertex current.
-	color[current] = j; // Save the color of vertex current
+        // At this point, j is the smallest possible color. Save the color of
+        // vertex current.
+        color[current] = j; // Save the color of vertex current
       }
     }
-    
+
     for (int i = 0; i < nthreads_; i++) {
       if (max_color[i] > max_color_global) {
         max_color_global = max_color[i];
