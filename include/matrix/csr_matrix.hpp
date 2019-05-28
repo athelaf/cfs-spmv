@@ -1545,9 +1545,7 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
     #pragma omp barrier
 
     int row_start = row_split_[t] >> BLK_BITS;
-    ;
     int row_end = row_split_[t + 1] >> BLK_BITS;
-    ;
     for (int i = row_start; i < row_end; i++) {
       for (const auto &row1 : indirect[i]) {
         for (const auto &row2 : indirect[i]) {
@@ -1567,12 +1565,12 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
 #endif
 
   const int V = g.size();
-  vector<int> color_map(V, V - 1);
-  color(g, color_map);
+  // vector<int> color_map(V, V - 1);
+  // color(g, color_map);
   // vector<int> color_map(V, V - 1);
   // balanced_color(g, vertices, color_map);
-  // tbb::concurrent_vector<int> color_map(V, V - 1);
-  // parallel_color(g, color_map);
+  tbb::concurrent_vector<int> color_map(V, V - 1);
+  parallel_color(g, color_map);
 
   // Find row sets per thread per color
   #pragma omp parallel num_threads(nthreads_)
