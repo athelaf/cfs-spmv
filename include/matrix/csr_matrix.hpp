@@ -1588,10 +1588,10 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
 #endif
 
   const int V = g.size();
-  vector<int> color_map(V, V - 1);
-  color(g, color_map);
   // vector<int> color_map(V, V - 1);
-  // balanced_color(g, vertices, color_map);
+  // color(g, color_map);
+  vector<int> color_map(V, V - 1);
+  balanced_color(g, vertices, color_map);
   // tbb::concurrent_vector<int> color_map(V, V - 1);
   // parallel_color(g, color_map);
 
@@ -2143,9 +2143,9 @@ void CSRMatrix<IndexT, ValueT>::balanced_color(const ConcurrentColoringGraph &g,
   // Balancing phase
   // Rebalance every processor
   for (int t = 0; t < nthreads_; t++) {
-    unsigned int total_load = 0;
-    unsigned int mean_load = 0;
-    std::vector<unsigned int> load(max_color);
+    int total_load = 0;
+    int mean_load = 0;
+    std::vector<int> load(max_color);
     int balance_deviation[max_color] = {0};
     std::vector<std::vector<int>> bin(max_color);
 
@@ -2161,6 +2161,11 @@ void CSRMatrix<IndexT, ValueT>::balanced_color(const ConcurrentColoringGraph &g,
     mean_load = total_load / max_color;
     for (int c = 0; c < max_color; c++) {
       balance_deviation[c] = load[c] - mean_load;
+    }
+
+    // Sort vertices per color bin in descending order of nonzeros
+    for (int c = 0; c < max_color; c++) {
+      std::sort(bin[c].begin(), bin[c].end(), greater<>());
     }
 
 #ifdef _LOG_INFO
@@ -2186,10 +2191,10 @@ void CSRMatrix<IndexT, ValueT>::balanced_color(const ConcurrentColoringGraph &g,
         distance(balance_deviation,
                  max_element(balance_deviation, balance_deviation + max_color));
     int i = 0;
-    const int tol = 1000;
+    // FIXME: tune tolerance
+    const int tol = 0;
     int num_vertices = static_cast<int>(bin[max_c].size());
     while (load[max_c] - mean_load > tol && i < num_vertices) {
-      // FIXME: Select vertex with largest weight
       int current = bin[max_c][i];
       // Find eligible colors for this vertex
       bool used[max_color] = {false};
@@ -2200,17 +2205,29 @@ void CSRMatrix<IndexT, ValueT>::balanced_color(const ConcurrentColoringGraph &g,
         used[color[neighbors[j]]] = true;
       }
 
-      // FIXME: Move to smallest color bin
       // Re-color with the first eligible color
+      // for (int c = 0; c < max_color; c++) {
+      //   if (!used[c]) {
+      //     // Update book-keeping
+      //     color[current] = c;
+      //     load[max_c] -= v[current].nnz;
+      //     load[c] += v[current].nnz;
+      //     break;
+      //   }
+      // }
+
+      // Re-color with the smallest eligible bin
+      int min_c = max_c;
+      int min_load = load[max_c];
       for (int c = 0; c < max_color; c++) {
-        if (!used[c]) {
-          // Update book-keeping
-          color[current] = c;
-          load[max_c] -= v[current].nnz;
-          load[c] += v[current].nnz;
-          break;
+        if (!used[c] && load[c] < min_load) {
+          min_c = c;
+          min_load = load[c];
         }
       }
+      color[current] = min_c;
+      load[max_c] -= v[current].nnz;
+      load[min_c] += v[current].nnz;
 
       i++;
     }
