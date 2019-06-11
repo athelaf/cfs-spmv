@@ -12,7 +12,7 @@ namespace util {
 enum class Platform { cpu };
 enum class Kernel { SpDMV };
 enum class Tuning { None, Aggressive };
-  enum class Format { coo, csr, sss };
+enum class Format { coo, csr, sss, hyb };
 
 inline int iceildiv(const int a, const int b) { return (a + b - 1) / b; }
 
