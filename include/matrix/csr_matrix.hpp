@@ -89,11 +89,12 @@ public:
 };
 
 struct WeightedVertex {
+  int vid;
   int tid;
   int nnz;
 };
 
-WeightedVertex make_weighted_vertex(int thread_id, int nnz);
+WeightedVertex make_weighted_vertex(int vertex_id, int thread_id, int nnz);
 
 template <typename IndexT, typename ValueT>
 class CSRMatrix : public SparseMatrix<IndexT, ValueT> {
@@ -1543,6 +1544,7 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
     IndexT row_offset = row_split_[t];
     for (int i = row_split_[t]; i < row_split_[t + 1]; i++) {
       IndexT blk_row = i >> BLK_BITS;
+      vertices[blk_row].vid = blk_row;
       vertices[blk_row].tid = t;
       vertices[blk_row].nnz =
           data->rowptr_[i - row_offset + 1] - data->rowptr_[i - row_offset];
@@ -1590,10 +1592,10 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
   const int V = g.size();
   // vector<int> color_map(V, V - 1);
   // color(g, color_map);
-  // vector<int> color_map(V, V - 1);
-  // balanced_color(g, vertices, color_map);
-  tbb::concurrent_vector<int> color_map(V, V - 1);
-  parallel_color(g, color_map);
+  vector<int> color_map(V, V - 1);
+  balanced_color(g, vertices, color_map);
+  // tbb::concurrent_vector<int> color_map(V, V - 1);
+  // parallel_color(g, color_map);
 
   // Find row sets per thread per color
   #pragma omp parallel num_threads(nthreads_)
@@ -2147,7 +2149,7 @@ void CSRMatrix<IndexT, ValueT>::balanced_color(const ConcurrentColoringGraph &g,
     int mean_load = 0;
     std::vector<int> load(max_color);
     int balance_deviation[max_color] = {0};
-    std::vector<std::vector<int>> bin(max_color);
+    std::vector<std::vector<WeightedVertex>> bin(max_color);
 
     // Find total weight and vertices per color, total weight over all colors
     // and balance deviation for this processor
@@ -2155,7 +2157,7 @@ void CSRMatrix<IndexT, ValueT>::balanced_color(const ConcurrentColoringGraph &g,
       if (v[i].tid == t) {
         total_load += v[i].nnz;
         load[color[i]] += v[i].nnz;
-        bin[color[i]].push_back(i);
+        bin[color[i]].push_back(v[i]);
       }
     }
     mean_load = total_load / max_color;
@@ -2163,10 +2165,10 @@ void CSRMatrix<IndexT, ValueT>::balanced_color(const ConcurrentColoringGraph &g,
       balance_deviation[c] = load[c] - mean_load;
     }
 
-    // Sort vertices per color bin in descending order of nonzeros
-    for (int c = 0; c < max_color; c++) {
-      std::sort(bin[c].begin(), bin[c].end(), greater<>());
-    }
+// Sort vertices per color bin in descending order of nonzeros
+// for (int c = 0; c < max_color; c++) {
+//   std::sort(bin[c].begin(), bin[c].end());
+// }
 
 #ifdef _LOG_INFO
     std::cout << std::fixed;
@@ -2195,7 +2197,7 @@ void CSRMatrix<IndexT, ValueT>::balanced_color(const ConcurrentColoringGraph &g,
     const int tol = 0;
     int num_vertices = static_cast<int>(bin[max_c].size());
     while (load[max_c] - mean_load > tol && i < num_vertices) {
-      int current = bin[max_c][i];
+      int current = bin[max_c][i].vid;
       // Find eligible colors for this vertex
       bool used[max_color] = {false};
       used[max_c] = true;
@@ -2204,17 +2206,6 @@ void CSRMatrix<IndexT, ValueT>::balanced_color(const ConcurrentColoringGraph &g,
         assert(color[neighbors[j]] < max_color);
         used[color[neighbors[j]]] = true;
       }
-
-      // Re-color with the first eligible color
-      // for (int c = 0; c < max_color; c++) {
-      //   if (!used[c]) {
-      //     // Update book-keeping
-      //     color[current] = c;
-      //     load[max_c] -= v[current].nnz;
-      //     load[c] += v[current].nnz;
-      //     break;
-      //   }
-      // }
 
       // Re-color with the smallest eligible bin
       int min_c = max_c;
