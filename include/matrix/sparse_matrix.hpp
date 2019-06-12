@@ -42,6 +42,8 @@ createSparseMatrix(const std::string &filename, Format format = Format::coo,
     return new CSRMatrix<IndexT, ValueT>(filename, platform);
   } else if (format == Format::sss) {
     return new CSRMatrix<IndexT, ValueT>(filename, platform, true);
+  } else if (format == Format::hyb) {
+    return new CSRMatrix<IndexT, ValueT>(filename, platform, true, true);
   } else {
     return new COOMatrix<IndexT, ValueT>(filename, platform);
   }
