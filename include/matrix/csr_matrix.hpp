@@ -48,12 +48,19 @@ struct ConflictMap {
 
 // FIXME: convert to nested class
 template <typename IndexT, typename ValueT> struct SymmetryCompressionData {
-  int nrows_;            // Number of rows
-  int nnz_lower_;        // Number of nonzeros in lower triangular part
-  int nnz_diag_;         // Number of nonzeros in diagonal
-  IndexT *rowptr_;       // Row pointer array for lower triangular part
-  IndexT *colind_;       // Column index array for lower triangular part
-  ValueT *values_;       // Values array for lower triangular part
+  int nrows_;      // Number of rows in lower triangular part
+  int nrows_high_; // Number of rows in high-bandwidth part
+  int nnz_lower_;  // Number of nonzeros in lower triangular part
+  int nnz_high_;   // Number of nonzeros in high-bandwidth part
+  int nnz_diag_;   // Number of nonzeros in diagonal
+  IndexT *rowptr_; // Row pointer array for lower triangular part
+  IndexT *colind_; // Column index array for lower triangular part
+  ValueT *values_; // Values array for lower triangular part
+  IndexT
+      *rowptr_high_; // Row pointer array for high-bandwidth part of the matrix
+  IndexT *rowind_;   // Row indices for high-bandwidth part of the matrix
+  IndexT *colind_high_;  // Column index array for rest of the matrix
+  ValueT *values_high_;  // Values array for high-bandwidth part of the matrix
   ValueT *diagonal_;     // Values of diagonal elements (padded)
   ValueT *local_vector_; // Local vector for reduction-based methods
   IndexT *range_ptr_;    // Number of ranges per color
@@ -66,20 +73,26 @@ template <typename IndexT, typename ValueT> struct SymmetryCompressionData {
 public:
   SymmetryCompressionData()
       : rowptr_(nullptr), colind_(nullptr), values_(nullptr),
-        diagonal_(nullptr), local_vector_(nullptr), range_ptr_(nullptr),
-        range_start_(nullptr), range_end_(nullptr), ncolors_(0),
-        platform_(Platform::cpu) {}
+        rowptr_high_(nullptr), rowind_(nullptr), colind_high_(nullptr),
+        values_high_(nullptr), diagonal_(nullptr), local_vector_(nullptr),
+        range_ptr_(nullptr), range_start_(nullptr), range_end_(nullptr),
+        ncolors_(0), platform_(Platform::cpu) {}
 
   SymmetryCompressionData(Platform platform)
       : rowptr_(nullptr), colind_(nullptr), values_(nullptr),
-        diagonal_(nullptr), local_vector_(nullptr), range_ptr_(nullptr),
-        range_start_(nullptr), range_end_(nullptr), ncolors_(0),
-        platform_(platform) {}
+        rowptr_high_(nullptr), rowind_(nullptr), colind_high_(nullptr),
+        values_high_(nullptr), diagonal_(nullptr), local_vector_(nullptr),
+        range_ptr_(nullptr), range_start_(nullptr), range_end_(nullptr),
+        ncolors_(0), platform_(platform) {}
 
   ~SymmetryCompressionData() {
     internal_free(rowptr_, platform_);
     internal_free(colind_, platform_);
     internal_free(values_, platform_);
+    internal_free(rowptr_high_, platform_);
+    internal_free(rowind_, platform_);
+    internal_free(colind_high_, platform_);
+    internal_free(values_high_, platform_);
     internal_free(diagonal_, platform_);
     internal_free(local_vector_, platform_);
     internal_free(range_ptr_, platform_);
@@ -149,7 +162,7 @@ public:
     // Partitioning
     split_nnz_ = false;
     nthreads_ = get_threads();
-    row_split_ = nullptr;
+    row_split_ = row_split_high_ = nullptr;
     // Symmetry compression
     cmp_symmetry_ = atomics_ = effective_ranges_ = local_vectors_indexing_ =
         conflict_free_apriori_ = conflict_free_aposteriori_ = false;
@@ -223,7 +236,7 @@ public:
     // Partitioning
     split_nnz_ = false;
     nthreads_ = get_threads();
-    row_split_ = nullptr;
+    row_split_ = row_split_high_ = nullptr;
     // Symmetry compression
     cmp_symmetry_ = atomics_ = effective_ranges_ = local_vectors_indexing_ =
         conflict_free_apriori_ = conflict_free_aposteriori_ = false;
@@ -263,6 +276,7 @@ public:
       internal_free(rowptr_high_, platform_);
       internal_free(colind_high_, platform_);
       internal_free(values_high_, platform_);
+      internal_free(row_split_high_, platform_);
     }
 
     if (local_vectors_indexing_) {
@@ -393,7 +407,7 @@ private:
   // Partitioning
   bool split_nnz_;
   int nthreads_;
-  IndexT *row_split_;
+  IndexT *row_split_, *row_split_high_;
   // Symmetry compression
   bool cmp_symmetry_;
   bool atomics_, effective_ranges_, local_vectors_indexing_,
@@ -621,7 +635,7 @@ void CSRMatrix<IndexT, ValueT>::split_by_bandwidth() {
   map<IndexT, IndexT> rowind;
   vector<IndexT> colind_low, colind_high;
   vector<ValueT> values_low, values_high;
-  const int THRESHOLD = 10000;
+  const int THRESHOLD = 15000;
 
   rowptr_low[0] = 0;
   for (int i = 0; i < nrows_; ++i) {
@@ -733,6 +747,9 @@ void CSRMatrix<IndexT, ValueT>::split_by_nnz(int nthreads, bool symmetric) {
 #endif
 
   if (!row_split_) {
+    if (hybrid_)
+      row_split_high_ =
+          (IndexT *)internal_alloc((nthreads + 1) * sizeof(IndexT), platform_);
     row_split_ =
         (IndexT *)internal_alloc((nthreads + 1) * sizeof(IndexT), platform_);
   }
@@ -740,6 +757,10 @@ void CSRMatrix<IndexT, ValueT>::split_by_nnz(int nthreads, bool symmetric) {
   if (nthreads_ == 1) {
     row_split_[0] = 0;
     row_split_[1] = nrows_;
+    if (hybrid_) {
+      row_split_high_[0] = 0;
+      row_split_high_[1] = nrows_left_;
+    }
     split_nnz_ = true;
     return;
   }
@@ -778,6 +799,44 @@ void CSRMatrix<IndexT, ValueT>::split_by_nnz(int nthreads, bool symmetric) {
   // If there are remaining threads create empty partitions
   for (int i = split_cnt + 1; i <= nthreads; i++) {
     row_split_[i] = nrows_;
+  }
+
+  if (hybrid_) {
+    // Compute the matrix splits.
+    IndexT *row_ptr = rowptr_high_;
+    int nnz_cnt = nnz_high_;
+    int nnz_per_split = nnz_cnt / nthreads_;
+    int curr_nnz = 0;
+    int row_start = 0;
+    int split_cnt = 0;
+    int i;
+
+    row_split_high_[0] = row_start;
+    for (i = 0; i < nrows_left_; i++) {
+      curr_nnz += row_ptr[i + 1] - row_ptr[i];
+      if ((curr_nnz >= nnz_per_split) && ((i + 1) % 1 == 0)) {
+        row_start = i + 1;
+        curr_nnz = 0;
+        ++split_cnt;
+        if (split_cnt <= nthreads)
+          row_split_high_[split_cnt] = row_start;
+      }
+    }
+
+    // Fill the last split with remaining elements
+    if (curr_nnz < nnz_per_split && split_cnt <= nthreads) {
+      row_split_high_[++split_cnt] = nrows_left_;
+    }
+
+    // If there are any remaining rows merge them in last partition
+    if (split_cnt > nthreads_) {
+      row_split_high_[nthreads_] = nrows_left_;
+    }
+
+    // If there are remaining threads create empty partitions
+    for (int i = split_cnt + 1; i <= nthreads; i++) {
+      row_split_high_[i] = nrows_left_;
+    }
   }
 
   split_nnz_ = true;
@@ -1362,6 +1421,8 @@ void CSRMatrix<IndexT, ValueT>::count_aposteriori_conflicts() {
   set<pair<IndexT, IndexT>> cnfl;
   map<IndexT, vector<pair<IndexT, IndexT>>> indirect_cnfl;
   for (int tid = 0; tid < nthreads_; ++tid) {
+    // set<pair<IndexT, IndexT>> cnfl;
+    // map<IndexT, vector<pair<IndexT, IndexT>>> indirect_cnfl;
     SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[tid];
     IndexT row_offset = row_split_[tid];
     for (int i = row_split_[tid]; i < row_split_[tid + 1]; ++i) {
@@ -1474,6 +1535,49 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
     values_sym.clear();
     colind_sym.shrink_to_fit();
     values_sym.shrink_to_fit();
+
+    if (hybrid_) {
+      int nrows = row_split_high_[tid + 1] - row_split_high_[tid];
+      int row_offset = row_split_high_[tid];
+      data->nrows_high_ = nrows;
+      data->rowind_ = (IndexT *)internal_alloc(nrows * sizeof(IndexT));
+      data->rowptr_high_ =
+          (IndexT *)internal_alloc((nrows + 1) * sizeof(IndexT));
+      memset(data->rowptr_high_, 0, (nrows + 1) * sizeof(IndexT));
+
+      vector<IndexT> colind_high;
+      vector<ValueT> values_high;
+      data->rowptr_high_[0] = 0;
+      for (int i = row_split_high_[tid]; i < row_split_high_[tid + 1]; ++i) {
+        data->rowind_[i - row_offset] = rowind_[i];
+        for (int j = rowptr_high_[i]; j < rowptr_high_[i + 1]; ++j) {
+          IndexT col = colind_high_[j];
+          data->rowptr_high_[i + 1 - row_offset]++;
+          colind_high.push_back(col);
+          values_high.push_back(values_high_[j]);
+        }
+      }
+
+      for (int i = 1; i <= nrows; ++i) {
+        data->rowptr_high_[i] += data->rowptr_high_[i - 1];
+      }
+
+      assert(data->rowptr_high_[nrows] == static_cast<int>(values_high.size()));
+      data->nnz_high_ = values_high.size();
+      data->colind_high_ =
+          (IndexT *)internal_alloc(data->nnz_high_ * sizeof(IndexT), platform_);
+      data->values_high_ =
+          (ValueT *)internal_alloc(data->nnz_high_ * sizeof(ValueT), platform_);
+
+      std::move(colind_high.begin(), colind_high.end(), data->colind_high_);
+      std::move(values_high.begin(), values_high.end(), data->values_high_);
+
+      // Cleanup
+      colind_high.clear();
+      values_high.clear();
+      colind_high.shrink_to_fit();
+      values_high.shrink_to_fit();
+    }
   }
 
   for (int tid = 0; tid < nthreads_; ++tid) {
@@ -1526,7 +1630,7 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
 // #endif
 
 //   // Run graph coloring
-//   vector<vertices_size_type> color_vec(num_vertices(g));
+//   vector<vertices_size_type> color_vec(no_vertices(g));
 //   ColorMap color_map(&color_vec.front(), get(boost::vertex_index, g));
 //   color(g, color_map);
 
@@ -1590,10 +1694,10 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
 #endif
 
   const int V = g.size();
-  // vector<int> color_map(V, V - 1);
-  // color(g, color_map);
   vector<int> color_map(V, V - 1);
-  balanced_color(g, vertices, color_map);
+  color(g, color_map);
+  // vector<int> color_map(V, V - 1);
+  // balanced_color(g, vertices, color_map);
   // tbb::concurrent_vector<int> color_map(V, V - 1);
   // parallel_color(g, color_map);
 
@@ -1683,6 +1787,16 @@ void CSRMatrix<IndexT, ValueT>::compress_symmetry() {
   // local_vectors_indexing();
   // conflict_free_apriori();
   conflict_free_aposteriori();
+
+  // Cleanup original CSR arrays
+  if (owns_data_) {
+    internal_free(rowptr_, platform_);
+    internal_free(colind_, platform_);
+    internal_free(values_, platform_);
+    rowptr_ = nullptr;
+    colind_ = nullptr;
+    values_ = nullptr;
+  }
 }
 
 template <typename IndexT, typename ValueT>
@@ -2195,8 +2309,8 @@ void CSRMatrix<IndexT, ValueT>::balanced_color(const ConcurrentColoringGraph &g,
     int i = 0;
     // FIXME: tune tolerance
     const int tol = 0;
-    int num_vertices = static_cast<int>(bin[max_c].size());
-    while (load[max_c] - mean_load > tol && i < num_vertices) {
+    int no_vertices = static_cast<int>(bin[max_c].size());
+    while (load[max_c] - mean_load > tol && i < no_vertices) {
       int current = bin[max_c][i].vid;
       // Find eligible colors for this vertex
       bool used[max_color] = {false};
@@ -2655,14 +2769,14 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free_hyb(
       #pragma omp barrier
     }
 
-    #pragma omp for schedule(static)
-    for (IndexT i = 0; i < nrows_left_; ++i) {
-      IndexT row = rowind_[i];
+    for (IndexT i = 0; i < data->nrows_high_; ++i) {
+      IndexT row = data->rowind_[i];
       register ValueT y_tmp = 0;
 
       PRAGMA_IVDEP
-      for (IndexT j = rowptr_high_[i]; j < rowptr_high_[i + 1]; ++j) {
-        y_tmp += values_high_[j] * x[colind_high_[j]];
+      for (IndexT j = data->rowptr_high_[i]; j < data->rowptr_high_[i + 1];
+           ++j) {
+        y_tmp += data->values_high_[j] * x[data->colind_high_[j]];
       }
 
       /* Reduction on y */
