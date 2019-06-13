@@ -46,7 +46,7 @@ struct WeightedVertex {
   int nnz;
 };
 WeightedVertex make_weighted_vertex(int vertex_id, int thread_id, int nnz);
-  
+
 // FIXME: convert to nested class
 template <typename IndexT, typename ValueT> struct SymmetryCompressionData {
   int nrows_;            // Number of rows in lower triangular submatrix
@@ -157,14 +157,17 @@ public:
     cnfl_map_ = nullptr;
 
     // Enforce first touch policy
-    #pragma omp parallel for schedule(static) num_threads(nthreads_)
-    for (int i = 0; i < nrows_ + 1; i++) {
-      rowptr_[i] = 0;
-    }
-    #pragma omp parallel for schedule(static) num_threads(nthreads_)
-    for (int i = 0; i < nnz_; i++) {
-      colind_[i] = 0;
-      values_[i] = 0.0;
+    #pragma omp parallel num_threads(nthreads_)
+    {
+      #pragma omp for schedule(static)
+      for (int i = 0; i < nrows_ + 1; i++) {
+        rowptr_[i] = 0;
+      }
+      #pragma omp for schedule(static)
+      for (int i = 0; i < nnz_; i++) {
+        colind_[i] = 0;
+        values_[i] = 0.0;
+      }
     }
 
     auto iter = mmf.begin();
@@ -291,38 +294,45 @@ public:
   virtual bool symmetric() const override { return symmetric_; }
 
   virtual size_t size() const override {
-    int size = (nrows_ + 1) * sizeof(IndexT); // rowptr
-    size += nnz_ * sizeof(IndexT);            // colind
-    size += nnz_ * sizeof(ValueT);            // values
-
-    if (split_nnz_)
-      size += (nthreads_ + 1) * sizeof(IndexT); // row_split
-
+    unsigned int size = 0;
     if (cmp_symmetry_) {
-      size -= nnz_ * sizeof(IndexT); // colind
-      size += nnz_lower_ * sizeof(IndexT);
-      size -= nnz_ * sizeof(ValueT); // values
-      size += nnz_lower_ * sizeof(ValueT);
-      size += nnz_diag_ * sizeof(ValueT); // diagonal
+      size += (nrows_ + 1 * nthreads_) * sizeof(IndexT); // rowptr
+      size += nnz_lower_ * sizeof(IndexT);               // colind
+      size += nnz_lower_ * sizeof(ValueT);               // values
+      size += nnz_diag_ * sizeof(ValueT);                // diagonal
+
       if (effective_ranges_) {
-        for (int t = 0; t < nthreads_; ++t)
-          size += row_split_[t] * sizeof(ValueT); // local vectors
+        // for (int t = 0; t < nthreads_; ++t)
+        //   size += row_split_[t] * sizeof(ValueT); // local vectors
       } else if (local_vectors_indexing_) {
-        for (int t = 0; t < nthreads_; ++t)
-          size += row_split_[t] * sizeof(ValueT);   // local vectors
+        // for (int t = 0; t < nthreads_; ++t)
+        //   size += row_split_[t] * sizeof(ValueT);   // local vectors
         size += 2 * nthreads_ * sizeof(IndexT);     // map start/end
         size += cnfl_map_->length * sizeof(short);  // map cpu
         size += cnfl_map_->length * sizeof(IndexT); // map pos
+      } else if (conflict_free_apriori_) {
+        size += (ncolors_ + 1) * sizeof(IndexT); // col_ptr
+        size += nrows_ * sizeof(IndexT);         // rowind_sym
       } else if (conflict_free_aposteriori_) {
         size += (ncolors_ + 1) * sizeof(IndexT); // range_ptr
         size += 2 * nranges_ * sizeof(IndexT);   // range_start/end
-      } else if (hybrid_) {
+      }
+
+      if (hybrid_) {
         size += (nrows_left_ + 1) * sizeof(IndexT); // rowptr_high
+        size += nrows_left_ * sizeof(IndexT);       // rowind_high
         size += nnz_high_ * sizeof(IndexT);         // colind_high
         size += nnz_high_ * sizeof(ValueT);         // values_high
       }
+
       return size;
     }
+
+    size += (nrows_ + 1) * sizeof(IndexT); // rowptr
+    size += nnz_ * sizeof(IndexT);         // colind
+    size += nnz_ * sizeof(ValueT);         // values
+    if (split_nnz_)
+      size += (nthreads_ + 1) * sizeof(IndexT); // row_split
 
     return size;
   }
@@ -460,12 +470,11 @@ private:
   void parallel_color(const ColoringGraph &g, const vector<WeightedVertex> &v,
                       tbb::concurrent_vector<int> &color);
   void ordering_heuristic(const ColoringGraph &g, vector<int> &order);
-  void first_fit_vertex_ordering(const ColoringGraph &g, vector<int> &order);
-  void first_fit_round_robin_vertex_ordering(const ColoringGraph &g,
-                                             vector<int> &order);
-  void longest_row_vertex_ordering(const ColoringGraph &g, vector<int> &order);
-  void longest_row_round_robin_vertex_ordering(const ColoringGraph &g,
-                                               vector<int> &order);
+  void first_fit_round_robin(const ColoringGraph &g, vector<int> &order);
+  void shortest_row(const ColoringGraph &g, vector<int> &order);
+  void shortest_row_round_robin(const ColoringGraph &g, vector<int> &order);
+  void longest_row(const ColoringGraph &g, vector<int> &order);
+  void longest_row_round_robin(const ColoringGraph &g, vector<int> &order);
 
   /*
    * Sparse Matrix - Dense Vector Multiplication kernels
@@ -622,7 +631,7 @@ void CSRMatrix<IndexT, ValueT>::split_by_bandwidth() {
   map<IndexT, IndexT> rowind;
   vector<IndexT> colind_low, colind_high;
   vector<ValueT> values_low, values_high;
-  const int THRESHOLD = 15000;
+  const int THRESHOLD = 10000;
 
   rowptr_low[0] = 0;
   for (int i = 0; i < nrows_; ++i) {
@@ -652,15 +661,18 @@ void CSRMatrix<IndexT, ValueT>::split_by_bandwidth() {
   move(colind_low.begin(), colind_low.end(), colind_);
   move(values_low.begin(), values_low.end(), values_);
 
-  #pragma omp parallel for schedule(static) num_threads(nthreads_)
-  for (int i = 0; i <= nrows_; i++) {
-    rowptr_[i] = rowptr_low[i];
-  }
+  #pragma omp parallel num_threads(nthreads_)
+  {
+    #pragma omp for schedule(static)
+    for (int i = 0; i <= nrows_; i++) {
+      rowptr_[i] = rowptr_low[i];
+    }
 
-  #pragma omp parallel for schedule(static) num_threads(nthreads_)
-  for (int i = 0; i < nnz_; i++) {
-    colind_[i] = colind_low[i];
-    values_[i] = values_low[i];
+    #pragma omp for schedule(static)
+    for (int i = 0; i < nnz_; i++) {
+      colind_[i] = colind_low[i];
+      values_[i] = values_low[i];
+    }
   }
 
   nrows_left_ = rowind.size();
@@ -674,9 +686,18 @@ void CSRMatrix<IndexT, ValueT>::split_by_bandwidth() {
   values_high_ =
       (ValueT *)internal_alloc(nnz_high_ * sizeof(ValueT), platform_);
 
-  #pragma omp parallel for schedule(static) num_threads(nthreads_)
-  for (int i = 0; i <= nrows_left_; i++) {
-    rowptr_high_[i] = 0;
+  #pragma omp parallel num_threads(nthreads_)
+  {
+    #pragma omp for schedule(static)
+    for (int i = 0; i <= nrows_left_; i++) {
+      rowptr_high_[i] = 0;
+    }
+
+    #pragma omp for schedule(static)
+    for (int i = 0; i < nnz_high_; i++) {
+      colind_high_[i] = colind_high[i];
+      values_high_[i] = values_high[i];
+    }
   }
 
   int cnt = 0;
@@ -689,12 +710,6 @@ void CSRMatrix<IndexT, ValueT>::split_by_bandwidth() {
     rowptr_high_[i] += rowptr_high_[i - 1];
   }
   assert(rowptr_high_[nrows_left_] == nnz_high_);
-
-  #pragma omp parallel for schedule(static) num_threads(nthreads_)
-  for (int i = 0; i < nnz_high_; i++) {
-    colind_high_[i] = colind_high[i];
-    values_high_[i] = values_high[i];
-  }
 }
 
 template <typename IndexT, typename ValueT>
@@ -1587,10 +1602,12 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
 #ifdef _LOG_INFO
   float assembly_start = omp_get_wtime();
 #endif
-  ColoringGraph g((int)ceil(nrows_ / (double)BLK_FACTOR));
-  vector<WeightedVertex> vertices((int)ceil(nrows_ / (double)BLK_FACTOR));
+  const int blk_rows = (int)ceil(nrows_ / (double)BLK_FACTOR);
+  ColoringGraph g(blk_rows);
+  vector<WeightedVertex> vertices(blk_rows);
   tbb::concurrent_vector<tbb::concurrent_vector<pair<int, int>>> indirect(
-      (int)ceil(nrows_ / (double)BLK_FACTOR));
+      blk_rows);
+
   #pragma omp parallel
   {
     int t = omp_get_thread_num();
@@ -1723,6 +1740,12 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
     assert(cnt == nranges);
   }
 
+  nranges_ = 0;
+  for (int t = 0; t < nthreads_; t++) {
+    SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[t];
+    nranges_ += data->nranges_;
+  }
+
 #ifdef _LOG_INFO
   tstop = omp_get_wtime();
   cout << "[INFO]: conversion time: " << tstop - tstart << endl;
@@ -1764,18 +1787,8 @@ void CSRMatrix<IndexT, ValueT>::compress_symmetry() {
 }
 
 template <typename IndexT, typename ValueT>
-void CSRMatrix<IndexT, ValueT>::first_fit_vertex_ordering(
-    const ColoringGraph &g, std::vector<int> &order) {
-#ifdef _LOG_INFO
-  cout << "[INFO]: applying FF vertex ordering..." << endl;
-#endif
-  for (size_t i = 0; i < g.size(); i++)
-    order.push_back(i);
-}
-
-template <typename IndexT, typename ValueT>
-void CSRMatrix<IndexT, ValueT>::first_fit_round_robin_vertex_ordering(
-    const ColoringGraph &g, std::vector<int> &order) {
+void CSRMatrix<IndexT, ValueT>::first_fit_round_robin(const ColoringGraph &g,
+                                                      std::vector<int> &order) {
 #ifdef _LOG_INFO
   cout << "[INFO]: applying FF-RR vertex ordering..." << endl;
 #endif
@@ -1797,8 +1810,70 @@ void CSRMatrix<IndexT, ValueT>::first_fit_round_robin_vertex_ordering(
 }
 
 template <typename IndexT, typename ValueT>
-void CSRMatrix<IndexT, ValueT>::longest_row_vertex_ordering(
+void CSRMatrix<IndexT, ValueT>::shortest_row(const ColoringGraph &g,
+                                             std::vector<int> &order) {
+#ifdef _LOG_INFO
+  cout << "[INFO]: applying SR vertex ordering..." << endl;
+#endif
+
+  // Sort rows by increasing number of nonzeros
+  std::multimap<size_t, IndexT> row_nnz;
+  for (int t = 0; t < nthreads_; ++t) {
+    SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[t];
+    IndexT row_offset = row_split_[t];
+    for (int i = 0; i < data->nrows_; ++i) {
+      int nnz = data->rowptr_[i + 1] - data->rowptr_[i];
+      row_nnz.insert(std::pair<size_t, IndexT>(nnz, i + row_offset));
+    }
+  }
+
+  for (auto it = row_nnz.begin(); it != row_nnz.end(); ++it) {
+    order.push_back(it->second);
+  }
+
+  assert(order.size() == g.size());
+}
+
+template <typename IndexT, typename ValueT>
+void CSRMatrix<IndexT, ValueT>::shortest_row_round_robin(
     const ColoringGraph &g, std::vector<int> &order) {
+#ifdef _LOG_INFO
+  cout << "[INFO]: applying SR-RR vertex ordering..." << endl;
+#endif
+
+  // Sort rows by increasing number of nonzeros per thread
+  std::multimap<size_t, IndexT> row_nnz[nthreads_];
+  for (int t = 0; t < nthreads_; ++t) {
+    SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[t];
+    IndexT row_offset = row_split_[t];
+    for (int i = 0; i < data->nrows_; ++i) {
+      int nnz = data->rowptr_[i + 1] - data->rowptr_[i];
+      row_nnz[t].insert(std::pair<size_t, IndexT>(nnz, i + row_offset));
+    }
+  }
+
+  typename std::multimap<size_t, IndexT>::iterator it[nthreads_];
+  for (int t = 0; t < nthreads_; t++) {
+    it[t] = row_nnz[t].begin();
+  }
+
+  int cnt = 0;
+  while (cnt < nrows_) {
+    for (int t = 0; t < nthreads_; t++) {
+      if (it[t] != row_nnz[t].end()) {
+        order.push_back(it[t]->second);
+        it[t]++;
+        cnt++;
+      }
+    }
+  }
+
+  assert(static_cast<int>(order.size()) == nrows_);
+}
+
+template <typename IndexT, typename ValueT>
+void CSRMatrix<IndexT, ValueT>::longest_row(const ColoringGraph &g,
+                                            std::vector<int> &order) {
 #ifdef _LOG_INFO
   cout << "[INFO]: applying LR vertex ordering..." << endl;
 #endif
@@ -1822,13 +1897,13 @@ void CSRMatrix<IndexT, ValueT>::longest_row_vertex_ordering(
 }
 
 template <typename IndexT, typename ValueT>
-void CSRMatrix<IndexT, ValueT>::longest_row_round_robin_vertex_ordering(
+void CSRMatrix<IndexT, ValueT>::longest_row_round_robin(
     const ColoringGraph &g, std::vector<int> &order) {
 #ifdef _LOG_INFO
   cout << "[INFO]: applying LR-RR vertex ordering..." << endl;
 #endif
 
-  // Sort rows by number of nonzeros per thread
+  // Sort rows by decreasing number of nonzeros per thread
   std::multimap<size_t, IndexT> row_nnz[nthreads_];
   for (int t = 0; t < nthreads_; ++t) {
     SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[t];
@@ -1858,8 +1933,6 @@ void CSRMatrix<IndexT, ValueT>::longest_row_round_robin_vertex_ordering(
   assert(static_cast<int>(order.size()) == nrows_);
 }
 
-// FF:           Colors vertices in the order they appear in the graph
-//               representation.
 // FF-RR:        Colors vertices in a round-robin fashion among threads
 //               but in the order they appear in the graph representation.
 // SR:           Colors vertices in increasing row size.
@@ -1873,16 +1946,11 @@ void CSRMatrix<IndexT, ValueT>::ordering_heuristic(const ColoringGraph &g,
                                                    vector<int> &order) {
   order.reserve(g.size());
 
-  // #ifdef _LOG_INFO
-  //   cout << "[INFO]: applying smallest last vertex ordering..." << endl;
-  // #endif
-  // order = smallest_last_vertex_ordering(g);
-  first_fit_vertex_ordering(g, order);
-  // first_fit_round_robin_vertex_ordering(g, order);
-  // longest_row_vertex_ordering(g, order);
-  // longest_row_round_robin_vertex_ordering(g, order);
-  // shortest_row_vertex_ordering(g, order);
-  // shortest_row_round_robin_vertex_ordering(g, order);
+  first_fit_round_robin(g, order);
+  // shortest_row(g, order);
+  // shortest_row_round_robin(g, order);
+  // longest_row(g, order);
+  // longest_row_round_robin(g, order);
 }
 
 template <typename IndexT, typename ValueT>
@@ -1896,9 +1964,11 @@ void CSRMatrix<IndexT, ValueT>::color(const ColoringGraph &g,
   float color_start = omp_get_wtime();
 #endif
 
+#ifdef _USE_ORDERING
   // Modify vertex ordering to improve coloring
   vector<int> order;
   ordering_heuristic(g, order);
+#endif
 
   const int V = g.size();
   int max_color = 0;
@@ -1913,7 +1983,11 @@ void CSRMatrix<IndexT, ValueT>::color(const ColoringGraph &g,
 
   // Determine the color for every vertex one by one
   for (int i = 0; i < V; i++) {
+#ifdef _USE_ORDERING
     const auto &neighbors = g[order[i]];
+#else
+    const auto &neighbors = g[i];
+#endif
 
     // Mark the colors of vertices adjacent to current.
     // i can be the value for marking since i increases successively
@@ -1934,8 +2008,12 @@ void CSRMatrix<IndexT, ValueT>::color(const ColoringGraph &g,
     if (j == max_color) // All colors are used up. Add one more color
       ++max_color;
 
-    // At this point, j is the smallest possible color
+// At this point, j is the smallest possible color
+#ifdef _USE_ORDERING
     color[order[i]] = j; // Save the color of vertex current
+#else
+    color[i] = j; // Save the color of vertex current
+#endif
   }
 
   ncolors_ = max_color;
@@ -1959,9 +2037,11 @@ void CSRMatrix<IndexT, ValueT>::color(const ColoringGraph &g,
   float color_start = omp_get_wtime();
 #endif
 
+#ifdef _USE_ORDERING
   // Modify vertex ordering to improve coloring
   vector<int> order;
   ordering_heuristic(g, order);
+#endif
 
   const int V = g.size();
   int max_color = 0;
@@ -1976,7 +2056,11 @@ void CSRMatrix<IndexT, ValueT>::color(const ColoringGraph &g,
 
   // Determine the color for every vertex one by one
   for (int i = 0; i < V; i++) {
+#ifdef _USE_ORDERING
     const auto &neighbors = g[order[i]];
+#else
+    const auto &neighbors = g[i];
+#endif
 
     // Mark the colors of vertices adjacent to current.
     // i can be the value for marking since i increases successively
@@ -1997,12 +2081,16 @@ void CSRMatrix<IndexT, ValueT>::color(const ColoringGraph &g,
     if (j == max_color) // All colors are used up. Add one more color
       ++max_color;
 
-    // At this point, j is the smallest possible color
+// At this point, j is the smallest possible color
+#ifdef _USE_ORDERING
     color[order[i]] = j; // Save the color of vertex current
+#else
+    color[i] = j; // Save the color of vertex current
+#endif
   }
 
   // Balancing phase
-  // Rebalance every processor
+  // Rebalance every processor individually
   for (int t = 0; t < nthreads_; t++) {
     int total_load = 0;
     int mean_load = 0;
@@ -2111,16 +2199,22 @@ void CSRMatrix<IndexT, ValueT>::parallel_color(
   float color_start = omp_get_wtime();
 #endif
 
+#ifdef _USE_ORDERING
   // Modify vertex ordering to improve coloring
   vector<int> order;
   ordering_heuristic(g, order);
+#endif
 
   const int V = g.size();
   vector<int> uncolored(V);
 
   #pragma omp parallel for schedule(static) num_threads(nthreads_)
   for (int i = 0; i < V; i++) {
+#ifdef _USE_ORDERING
     uncolored[i] = order[i];
+#else
+    uncolored[i] = i;
+#endif
   }
 
   int max_color_global = 0;
@@ -2160,24 +2254,26 @@ void CSRMatrix<IndexT, ValueT>::parallel_color(
         // vertex current.
         color[current] = j; // Save the color of vertex current
       }
-    }
 
-    for (int i = 0; i < nthreads_; i++) {
-      if (max_color[i] > max_color_global) {
-        max_color_global = max_color[i];
+      #pragma omp barrier
+      #pragma omp single
+      for (int i = 0; i < nthreads_; i++) {
+        if (max_color[i] > max_color_global) {
+          max_color_global = max_color[i];
+        }
+        max_color[i] = max_color_global;
       }
-      max_color[i] = max_color_global;
-    }
 
-    // Phase 2: conflict detection (parallel)
-    #pragma omp parallel for schedule(static) num_threads(nthreads_)
-    for (int i = 0; i < U; i++) {
-      int current = uncolored[i];
-      const auto &neighbors = g[current];
-      for (size_t j = 0; j < neighbors.size(); j++) {
-        // Add higher numbered vertex to uncolored set
-        if ((color[neighbors[j]] == color[current])) {
-          color[current] = V - 1;
+      // Phase 2: conflict detection (parallel)
+      #pragma omp for schedule(static)
+      for (int i = 0; i < U; i++) {
+        int current = uncolored[i];
+        const auto &neighbors = g[current];
+        for (size_t j = 0; j < neighbors.size(); j++) {
+          // Add higher numbered vertex to uncolored set
+          if ((color[neighbors[j]] == color[current])) {
+            color[current] = V - 1;
+          }
         }
       }
     }
@@ -2207,8 +2303,8 @@ void CSRMatrix<IndexT, ValueT>::parallel_color(
     tbb::concurrent_vector<int> &color) {
   assert(symmetric_ && cmp_symmetry_);
 #ifdef _LOG_INFO
-  cout << "[INFO]: applying distance-1 parallel graph coloring to detect "
-          "conflict-free submatrices"
+  cout << "[INFO]: applying distance-1 parallel balanced graph coloring to "
+          "detect conflict-free submatrices"
        << endl;
   float color_start = omp_get_wtime();
 #endif
@@ -2222,7 +2318,11 @@ void CSRMatrix<IndexT, ValueT>::parallel_color(
 
   #pragma omp parallel for schedule(static) num_threads(nthreads_)
   for (int i = 0; i < V; i++) {
+#ifdef _USE_ORDERING
     uncolored[i] = order[i];
+#else
+    uncolored[i] = i;
+#endif
   }
 
   int max_color_global = 0;
