@@ -24,6 +24,10 @@ ifeq ($(USE_DOUBLE), 1)
 	CPPFLAGS += -D_USE_DOUBLE
 endif
 
+ifeq ($(USE_ORDERING), 1)
+	CPPFLAGS += -D_USE_ORDERING
+endif
+
 ifeq ($(LOG), 1)
 	CPPFLAGS +=  -D_LOG_INFO
 endif
