@@ -4,6 +4,7 @@
 
 #include "kernel/sparse_kernels.hpp"
 #include "matrix/sparse_matrix.hpp"
+#include "utils/platforms.hpp"
 
 using namespace std;
 using namespace util;
@@ -48,16 +49,16 @@ int main(int argc, char **argv) {
   SparseMatrix<INDEX, VALUE> *A = nullptr;
   switch (fmt) {
   case 0:
-    A = createSparseMatrix<INDEX, VALUE>(mmf_file, Format::coo);
+    A = SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::coo);
     break;
   case 1:
-    A = createSparseMatrix<INDEX, VALUE>(mmf_file, Format::csr);
+    A = SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::csr);
     break;
   case 2:
-    A = createSparseMatrix<INDEX, VALUE>(mmf_file, Format::sss);
+    A = SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::sss);
     break;
   case 3:
-    A = createSparseMatrix<INDEX, VALUE>(mmf_file, Format::hyb);
+    A = SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::hyb);
     break;
   default:
     break;
@@ -73,9 +74,8 @@ int main(int argc, char **argv) {
   VALUE *x = (VALUE *)internal_alloc(N * sizeof(VALUE));
   VALUE *y = (VALUE *)internal_alloc(M * sizeof(VALUE));
 
-  random_device
-      rd; // Will be used to obtain a seed for the random number engine
-  mt19937 gen(rd()); // Standard mersenne_twister_engine seeded with rd()
+  random_device rd;
+  mt19937 gen(rd());
   uniform_real_distribution<> dis_val(10.01, 20.42);
   for (int i = 0; i < N; i++) {
     x[i] = dis_val(gen);
@@ -85,7 +85,7 @@ int main(int argc, char **argv) {
   fn(y, M, x, N);
 
   SparseMatrix<INDEX, VALUE> *A_test =
-      createSparseMatrix<INDEX, VALUE>(mmf_file, Format::coo);
+      SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::coo);
   SpDMV<INDEX, VALUE> test(A_test, Tuning::None);
   VALUE *y_test = (VALUE *)internal_alloc(M * sizeof(VALUE));
   test(y_test, M, x, N);
@@ -95,7 +95,7 @@ int main(int argc, char **argv) {
 #endif
   bool passed = true;
   for (INDEX i = 0; i < M; i++) {
-    if (fabs((VALUE)(y[i] - y_test[i]) / (VALUE)y[i]) > EPS) {
+    if (!isEqual(y[i], y_test[i])) {
       cout << "element " << i << " differs: " << y[i] << " vs " << y_test[i]
            << endl;
       passed = false;
