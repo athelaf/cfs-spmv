@@ -9,8 +9,8 @@
 #endif
 
 #ifdef _RSB
-#include <rsb.h>
 #include <blas_sparse.h>
+#include <rsb.h>
 #endif
 
 #include "kernel/sparse_kernels.hpp"
@@ -62,14 +62,14 @@ int main(int argc, char **argv) {
 
   // Load a sparse matrix from an MMF file
   SparseMatrix<INDEX, VALUE> *A = nullptr;
-  A = createSparseMatrix<INDEX, VALUE>(mmf_file, Format::coo);
+  A = SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::coo);
   int M = A->nrows();
   int N = A->ncols();
   int nnz = A->nnz();
 
-  random_device rd;
-  mt19937 gen(rd());
-  uniform_real_distribution<> dis_val(0.01, 0.42);
+  // random_device rd;
+  // mt19937 gen(rd());
+  // uniform_real_distribution<> dis_val(0.01, 0.42);
 
   VALUE *y = (VALUE *)internal_alloc(M * sizeof(VALUE));
   #pragma omp parallel for schedule(static)
@@ -80,7 +80,7 @@ int main(int argc, char **argv) {
   VALUE *x = (VALUE *)internal_alloc(N * sizeof(VALUE));
   #pragma omp parallel for schedule(static)
   for (int i = 0; i < N; i++) {
-    x[i] = dis_val(gen);
+    x[i] = 0.42; // dis_val(gen);
   }
 
   double compute_time = 0.0, preproc_time = 0.0, tstart = 0.0, tstop = 0.0,
@@ -92,17 +92,17 @@ int main(int argc, char **argv) {
     break;
   }
   case 1: {
-    A = createSparseMatrix<INDEX, VALUE>(mmf_file, Format::csr);
+    A = SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::csr);
     format_string = "CSR";
     break;
   }
   case 2: {
-    A = createSparseMatrix<INDEX, VALUE>(mmf_file, Format::sss);
+    A = SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::sss);
     format_string = "SSS";
     break;
   }
   case 3: {
-    A = createSparseMatrix<INDEX, VALUE>(mmf_file, Format::hyb);
+    A = SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::hyb);
     format_string = "HYB";
     break;
   }
