@@ -2,16 +2,15 @@
 
 #include <cassert>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <omp.h>
-
-#include <boost/bind.hpp>
-#include <boost/function.hpp>
 
 #include "io/mmf.hpp"
 #include "utils/allocator.hpp"
 #include "utils/platforms.hpp"
 
+using namespace std;
 using namespace util;
 using namespace util::io;
 
@@ -96,8 +95,9 @@ public:
   virtual inline Platform platform() const override { return platform_; }
 
   virtual bool tune(Kernel k, Tuning t) override {
-    spmv_fn =
-        boost::bind(&COOMatrix<IndexT, ValueT>::cpu_mv_vanilla, this, _1, _2);
+    using placeholders::_1;
+    using placeholders::_2;
+    spmv_fn = bind(&COOMatrix<IndexT, ValueT>::cpu_mv_vanilla, this, _1, _2);
     return false;
   }
 
@@ -113,7 +113,7 @@ private:
   IndexT *rowind_;
   IndexT *colind_;
   ValueT *values_;
-  boost::function<void(ValueT *__restrict, const ValueT *__restrict)> spmv_fn;
+  function<void(ValueT *__restrict, const ValueT *__restrict)> spmv_fn;
 
   /*
    * Sparse Matrix - Dense Vector Multiplication kernels

@@ -1,13 +1,13 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstring>
+#include <functional>
 #include <iomanip>
 #include <memory>
 
-#include <boost/bind.hpp>
-#include <boost/function.hpp>
 #include <boost/functional/hash.hpp>
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/bandwidth.hpp>
@@ -23,6 +23,10 @@
 #include "utils/platforms.hpp"
 #include "utils/runtime.hpp"
 
+#define BALANCING_STEPS 1
+#define MAX_THREADS 28
+#define MAX_COLORS MAX_THREADS
+
 using namespace std;
 using namespace util;
 using namespace util::io;
@@ -31,7 +35,7 @@ using namespace util::runtime;
 namespace matrix {
 namespace sparse {
 
-// Formward declarations
+// Forward declarations
 template <typename IndexT, typename ValueT> class SparseMatrix;
 
 struct ConflictMap {
@@ -44,23 +48,32 @@ struct WeightedVertex {
   int vid;
   int tid;
   int nnz;
+
+  WeightedVertex() : vid(0), tid(0), nnz(0) {}
+  WeightedVertex(int vertex_id, int thread_id, int nnz)
+      : vid(vertex_id), tid(thread_id), nnz(nnz) {}
 };
-WeightedVertex make_weighted_vertex(int vertex_id, int thread_id, int nnz);
+
+struct CompareWeightedVertex {
+  bool operator()(const WeightedVertex &lhs, const WeightedVertex &rhs) {
+    // return lhs.nnz < rhs.nnz;
+    return lhs.vid > rhs.vid;
+  }
+};
 
 // FIXME: convert to nested class
 template <typename IndexT, typename ValueT> struct SymmetryCompressionData {
   int nrows_;            // Number of rows in lower triangular submatrix
-  int nrows_high_;       // Number of rows in high-bandwidth submatrix
+  int nrows_h_;          // Number of rows in high-bandwidth submatrix
   int nnz_lower_;        // Number of nonzeros in lower triangular submatrix
-  int nnz_high_;         // Number of nonzeros in high-bandwidth submatrix
+  int nnz_h_;            // Number of nonzeros in high-bandwidth submatrix
   int nnz_diag_;         // Number of nonzeros in diagonal
   IndexT *rowptr_;       // Row pointer array for lower triangular submatrix
   IndexT *colind_;       // Column index array for lower triangular submatrix
   ValueT *values_;       // Values array for lower triangular submatrix
-  IndexT *rowptr_high_;  // Row pointer array for high-bandwidth submatrix
-  IndexT *rowind_high_;  // Row indices for high-bandwidth submatrix
-  IndexT *colind_high_;  // Column index array for high-bandwidth submatrix
-  ValueT *values_high_;  // Values array for high-bandwidth submatrix
+  IndexT *rowptr_h_;     // Row pointer array for high-bandwidth submatrix
+  IndexT *colind_h_;     // Column index array for high-bandwidth submatrix
+  ValueT *values_h_;     // Values array for high-bandwidth submatrix
   ValueT *diagonal_;     // Values of diagonal elements (padded)
   ValueT *local_vector_; // Local vector for reduction-based methods
   IndexT *range_ptr_;    // Number of ranges per color
@@ -68,31 +81,31 @@ template <typename IndexT, typename ValueT> struct SymmetryCompressionData {
   int map_start_, map_end_;          // Conflict map start/end
   int nranges_;                      // Total number or ranges
   int ncolors_;                      // Number or colors
+  vector<int> deps_[MAX_COLORS];
   Platform platform_;
 
 public:
   SymmetryCompressionData()
       : rowptr_(nullptr), colind_(nullptr), values_(nullptr),
-        rowptr_high_(nullptr), rowind_high_(nullptr), colind_high_(nullptr),
-        values_high_(nullptr), diagonal_(nullptr), local_vector_(nullptr),
-        range_ptr_(nullptr), range_start_(nullptr), range_end_(nullptr),
-        ncolors_(0), platform_(Platform::cpu) {}
+        rowptr_h_(nullptr), colind_h_(nullptr), values_h_(nullptr),
+        diagonal_(nullptr), local_vector_(nullptr), range_ptr_(nullptr),
+        range_start_(nullptr), range_end_(nullptr), ncolors_(0),
+        platform_(Platform::cpu) {}
 
   SymmetryCompressionData(Platform platform)
       : rowptr_(nullptr), colind_(nullptr), values_(nullptr),
-        rowptr_high_(nullptr), rowind_high_(nullptr), colind_high_(nullptr),
-        values_high_(nullptr), diagonal_(nullptr), local_vector_(nullptr),
-        range_ptr_(nullptr), range_start_(nullptr), range_end_(nullptr),
-        ncolors_(0), platform_(platform) {}
+        rowptr_h_(nullptr), colind_h_(nullptr), values_h_(nullptr),
+        diagonal_(nullptr), local_vector_(nullptr), range_ptr_(nullptr),
+        range_start_(nullptr), range_end_(nullptr), ncolors_(0),
+        platform_(platform) {}
 
   ~SymmetryCompressionData() {
     internal_free(rowptr_, platform_);
     internal_free(colind_, platform_);
     internal_free(values_, platform_);
-    internal_free(rowptr_high_, platform_);
-    internal_free(rowind_high_, platform_);
-    internal_free(colind_high_, platform_);
-    internal_free(values_high_, platform_);
+    internal_free(rowptr_h_, platform_);
+    internal_free(colind_h_, platform_);
+    internal_free(values_h_, platform_);
     internal_free(diagonal_, platform_);
     internal_free(local_vector_, platform_);
     internal_free(range_ptr_, platform_);
@@ -141,16 +154,17 @@ public:
     colind_ = (IndexT *)internal_alloc(nnz_ * sizeof(IndexT), platform_);
     values_ = (ValueT *)internal_alloc(nnz_ * sizeof(ValueT), platform_);
     // Hybrid
-    rowptr_high_ = rowind_high_ = colind_high_ = nullptr;
-    values_high_ = nullptr;
+    rowptr_h_ = colind_h_ = nullptr;
+    values_h_ = nullptr;
     // Partitioning
     split_nnz_ = false;
     nthreads_ = get_threads();
-    row_split_ = row_split_high_ = nullptr;
+    row_split_ = nullptr;
     // Symmetry compression
     cmp_symmetry_ = atomics_ = effective_ranges_ = local_vectors_indexing_ =
         conflict_free_apriori_ = conflict_free_aposteriori_ = false;
-    nnz_lower_ = nnz_diag_ = nrows_left_ = nconflicts_ = ncolors_ = 0;
+    nnz_lower_ = nnz_diag_ = nrows_left_ = nconflicts_ = ncolors_ = nranges_ =
+        0;
     rowptr_sym_ = rowind_sym_ = colind_sym_ = nullptr;
     values_sym_ = diagonal_ = nullptr;
     color_ptr_ = nullptr;
@@ -206,6 +220,8 @@ public:
     assert(val_i == nnz_);
 
     // reorder();
+    if (nthreads_ == 1)
+      hybrid_ = false;
     if (nthreads_ > 1 && hybrid_)
       split_by_bandwidth();
     split_by_nnz(nthreads_);
@@ -222,22 +238,25 @@ public:
     values_ = values;
     nnz_ = rowptr_[nrows];
     // Hybrid
-    rowptr_high_ = rowind_high_ = colind_high_ = nullptr;
-    values_high_ = nullptr;
+    rowptr_h_ = colind_h_ = nullptr;
+    values_h_ = nullptr;
     // Partitioning
     split_nnz_ = false;
     nthreads_ = get_threads();
-    row_split_ = row_split_high_ = nullptr;
+    row_split_ = nullptr;
     // Symmetry compression
     cmp_symmetry_ = atomics_ = effective_ranges_ = local_vectors_indexing_ =
         conflict_free_apriori_ = conflict_free_aposteriori_ = false;
-    nnz_lower_ = nnz_diag_ = nrows_left_ = nconflicts_ = ncolors_ = 0;
+    nnz_lower_ = nnz_diag_ = nrows_left_ = nconflicts_ = ncolors_ = nranges_ =
+        0;
     rowptr_sym_ = rowind_sym_ = colind_sym_ = nullptr;
     values_sym_ = diagonal_ = nullptr;
     color_ptr_ = nullptr;
     cnfl_map_ = nullptr;
 
     // reorder();
+    if (nthreads_ == 1)
+      hybrid_ = false;
     if (nthreads_ > 1 && hybrid_)
       split_by_bandwidth();
     split_by_nnz(nthreads_);
@@ -259,11 +278,9 @@ public:
     internal_free(row_split_, platform_);
 
     if (hybrid_) {
-      internal_free(rowptr_high_, platform_);
-      internal_free(rowind_high_, platform_);
-      internal_free(colind_high_, platform_);
-      internal_free(values_high_, platform_);
-      internal_free(row_split_high_, platform_);
+      internal_free(rowptr_h_, platform_);
+      internal_free(colind_h_, platform_);
+      internal_free(values_h_, platform_);
     }
 
     internal_free(diagonal_, platform_);
@@ -282,10 +299,10 @@ public:
       delete cnfl_map_;
     }
 
-    for (size_t i = 0; i < sym_cmp_data_.size(); ++i)
-      delete sym_cmp_data_[i];
-    sym_cmp_data_.clear();
-    sym_cmp_data_.shrink_to_fit();
+    if (cmp_symmetry_)
+      for (int i = 0; i < nthreads_; ++i)
+        delete sym_cmp_data_[i];
+    internal_free(sym_cmp_data_, platform_);
   }
 
   virtual int nrows() const override { return nrows_; }
@@ -294,19 +311,14 @@ public:
   virtual bool symmetric() const override { return symmetric_; }
 
   virtual size_t size() const override {
-    unsigned int size = 0;
+    size_t size = 0;
     if (cmp_symmetry_) {
       size += (nrows_ + 1 * nthreads_) * sizeof(IndexT); // rowptr
       size += nnz_lower_ * sizeof(IndexT);               // colind
       size += nnz_lower_ * sizeof(ValueT);               // values
       size += nnz_diag_ * sizeof(ValueT);                // diagonal
 
-      if (effective_ranges_) {
-        // for (int t = 0; t < nthreads_; ++t)
-        //   size += row_split_[t] * sizeof(ValueT); // local vectors
-      } else if (local_vectors_indexing_) {
-        // for (int t = 0; t < nthreads_; ++t)
-        //   size += row_split_[t] * sizeof(ValueT);   // local vectors
+      if (local_vectors_indexing_) {
         size += 2 * nthreads_ * sizeof(IndexT);     // map start/end
         size += cnfl_map_->length * sizeof(short);  // map cpu
         size += cnfl_map_->length * sizeof(IndexT); // map pos
@@ -320,9 +332,8 @@ public:
 
       if (hybrid_) {
         size += (nrows_left_ + 1) * sizeof(IndexT); // rowptr_high
-        size += nrows_left_ * sizeof(IndexT);       // rowind_high
-        size += nnz_high_ * sizeof(IndexT);         // colind_high
-        size += nnz_high_ * sizeof(ValueT);         // values_high
+        size += nnz_h_ * sizeof(IndexT);            // colind_high
+        size += nnz_h_ * sizeof(ValueT);            // values_high
       }
 
       return size;
@@ -340,9 +351,11 @@ public:
   virtual inline Platform platform() const override { return platform_; }
 
   virtual bool tune(Kernel k, Tuning t) override {
+    using placeholders::_1;
+    using placeholders::_2;
+
     if (t == Tuning::None) {
-      spmv_fn =
-          boost::bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_vanilla, this, _1, _2);
+      spmv_fn = bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_vanilla, this, _1, _2);
       return false;
     }
 
@@ -352,38 +365,37 @@ public:
 #endif
       compress_symmetry();
       if (nthreads_ == 1) {
-        spmv_fn = boost::bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_sym_serial,
-                              this, _1, _2);
+        spmv_fn =
+            bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_sym_serial, this, _1, _2);
       } else {
         if (atomics_)
-          spmv_fn = boost::bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_sym_atomics,
-                                this, _1, _2);
+          spmv_fn = bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_sym_atomics, this,
+                         _1, _2);
         else if (effective_ranges_)
-          spmv_fn = boost::bind(
-              &CSRMatrix<IndexT, ValueT>::cpu_mv_sym_effective_ranges, this, _1,
-              _2);
+          spmv_fn =
+              bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_sym_effective_ranges,
+                   this, _1, _2);
         else if (local_vectors_indexing_)
-          spmv_fn = boost::bind(
+          spmv_fn = bind(
               &CSRMatrix<IndexT, ValueT>::cpu_mv_sym_local_vectors_indexing,
               this, _1, _2);
         else if (conflict_free_apriori_)
-          spmv_fn = boost::bind(
-              &CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free_apriori,
-              this, _1, _2);
-        else if (conflict_free_aposteriori_ && hybrid_)
-          spmv_fn = boost::bind(
-              &CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free_hyb, this,
-              _1, _2);
-        else if (conflict_free_aposteriori_ && !hybrid_)
           spmv_fn =
-              boost::bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free,
-                          this, _1, _2);
+              bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free_apriori,
+                   this, _1, _2);
+        else if (conflict_free_aposteriori_ && hybrid_)
+          spmv_fn =
+              bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free_hyb,
+                   this, _1, _2);
+        else if (conflict_free_aposteriori_ && !hybrid_)
+          spmv_fn = bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free,
+                         this, _1, _2);
         else
           assert(false);
       }
     } else {
-      spmv_fn = boost::bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_split_nnz, this,
-                            _1, _2);
+      spmv_fn =
+          bind(&CSRMatrix<IndexT, ValueT>::cpu_mv_split_nnz, this, _1, _2);
     }
 
     return true;
@@ -401,21 +413,21 @@ public:
 
 private:
   Platform platform_;
-  int nrows_, ncols_, nnz_, nnz_high_;
+  int nrows_, ncols_, nnz_, nnz_h_;
   bool symmetric_, hybrid_, owns_data_;
   IndexT *rowptr_;
   IndexT *colind_;
   ValueT *values_;
   // Hybrid
-  IndexT *rowptr_high_, *rowind_high_;
-  IndexT *colind_high_;
-  ValueT *values_high_;
+  IndexT *rowptr_h_;
+  IndexT *colind_h_;
+  ValueT *values_h_;
   // Internal function pointers
-  boost::function<void(ValueT *__restrict, const ValueT *__restrict)> spmv_fn;
+  function<void(ValueT *__restrict, const ValueT *__restrict)> spmv_fn;
   // Partitioning
   bool split_nnz_;
   int nthreads_;
-  IndexT *row_split_, *row_split_high_;
+  IndexT *row_split_;
   // Symmetry compression
   bool cmp_symmetry_;
   bool atomics_, effective_ranges_, local_vectors_indexing_,
@@ -428,9 +440,9 @@ private:
   IndexT *color_ptr_;
   ConflictMap *cnfl_map_;
   ValueT **y_local_;
-  vector<SymmetryCompressionData<IndexT, ValueT> *> sym_cmp_data_;
-  const int BLK_FACTOR = 8;
-  const int BLK_BITS = 3;
+  SymmetryCompressionData<IndexT, ValueT> **sym_cmp_data_;
+  const int BLK_FACTOR = 1;
+  const int BLK_BITS = 0;
 
   /*
   * Preprocessing routines
@@ -438,7 +450,7 @@ private:
   void reorder();
   void split_by_bandwidth();
   void split_by_nrows(int nthreads);
-  void split_by_nnz(int nthreads, bool symmetric = false);
+  void split_by_nnz(int nthreads);
 
   /*
    * Symmetry compression
@@ -495,14 +507,6 @@ private:
                                 const ValueT *__restrict x);
   void cpu_mv_sym_conflict_free_hyb(ValueT *__restrict y,
                                     const ValueT *__restrict x);
-
-  /*
-   * Benchmarks for conflict-free SpMV
-   */
-  void bench_conflict_free_nobarrier(ValueT *__restrict y,
-                                     const ValueT *__restrict x);
-  void bench_conflict_free_nobarrier_noxmiss(ValueT *__restrict y,
-                                             const ValueT *__restrict x);
 };
 
 template <typename IndexT, typename ValueT>
@@ -628,12 +632,13 @@ void CSRMatrix<IndexT, ValueT>::split_by_bandwidth() {
 #endif
 
   vector<IndexT> rowptr_low(nrows_ + 1, 0);
-  map<IndexT, IndexT> rowind;
+  vector<IndexT> rowptr_high(nrows_ + 1, 0);
   vector<IndexT> colind_low, colind_high;
   vector<ValueT> values_low, values_high;
-  const int THRESHOLD = 10000;
+  const int THRESHOLD = 4000;
 
   rowptr_low[0] = 0;
+  rowptr_high[0] = 0;
   for (int i = 0; i < nrows_; ++i) {
     for (int j = rowptr_[i]; j < rowptr_[i + 1]; ++j) {
       if (abs(colind_[j] - i) < THRESHOLD) {
@@ -641,10 +646,7 @@ void CSRMatrix<IndexT, ValueT>::split_by_bandwidth() {
         colind_low.push_back(colind_[j]);
         values_low.push_back(values_[j]);
       } else {
-        if (rowind.find(i) == rowind.end())
-          rowind.insert(pair<IndexT, IndexT>(i, 1));
-        else
-          rowind[i]++;
+        rowptr_high[i + 1]++;
         colind_high.push_back(colind_[j]);
         values_high.push_back(values_[j]);
       }
@@ -653,63 +655,55 @@ void CSRMatrix<IndexT, ValueT>::split_by_bandwidth() {
 
   for (int i = 1; i < nrows_ + 1; ++i) {
     rowptr_low[i] += rowptr_low[i - 1];
+    rowptr_high[i] += rowptr_high[i - 1];
   }
   assert(rowptr_low[nrows_] == static_cast<int>(values_low.size()));
+  assert(rowptr_high[nrows_] == static_cast<int>(values_high.size()));
 
   nnz_ = values_low.size();
   move(rowptr_low.begin(), rowptr_low.end(), rowptr_);
   move(colind_low.begin(), colind_low.end(), colind_);
   move(values_low.begin(), values_low.end(), values_);
 
-  #pragma omp parallel num_threads(nthreads_)
-  {
-    #pragma omp for schedule(static)
-    for (int i = 0; i <= nrows_; i++) {
-      rowptr_[i] = rowptr_low[i];
-    }
+  // #pragma omp parallel num_threads(nthreads_)
+  // {
+  //   #pragma omp for schedule(static)
+  //   for (int i = 0; i <= nrows_; i++) {
+  //     rowptr_[i] = rowptr_low[i];
+  //   }
 
-    #pragma omp for schedule(static)
-    for (int i = 0; i < nnz_; i++) {
-      colind_[i] = colind_low[i];
-      values_[i] = values_low[i];
-    }
-  }
+  //   #pragma omp for schedule(static)
+  //   for (int i = 0; i < nnz_; i++) {
+  //     colind_[i] = colind_low[i];
+  //     values_[i] = values_low[i];
+  //   }
+  // }
 
-  nrows_left_ = rowind.size();
-  nnz_high_ = values_high.size();
-  rowind_high_ =
-      (IndexT *)internal_alloc(nrows_left_ * sizeof(IndexT), platform_);
-  rowptr_high_ =
-      (IndexT *)internal_alloc((nrows_left_ + 1) * sizeof(IndexT), platform_);
-  colind_high_ =
-      (IndexT *)internal_alloc(nnz_high_ * sizeof(IndexT), platform_);
-  values_high_ =
-      (ValueT *)internal_alloc(nnz_high_ * sizeof(ValueT), platform_);
+  nnz_h_ = values_high.size();
+  rowptr_h_ =
+      (IndexT *)internal_alloc((nrows_ + 1) * sizeof(IndexT), platform_);
+  colind_h_ = (IndexT *)internal_alloc(nnz_h_ * sizeof(IndexT), platform_);
+  values_h_ = (ValueT *)internal_alloc(nnz_h_ * sizeof(ValueT), platform_);
 
-  #pragma omp parallel num_threads(nthreads_)
-  {
-    #pragma omp for schedule(static)
-    for (int i = 0; i <= nrows_left_; i++) {
-      rowptr_high_[i] = 0;
-    }
+  move(rowptr_high.begin(), rowptr_high.end(), rowptr_h_);
+  move(colind_high.begin(), colind_high.end(), colind_h_);
+  move(values_high.begin(), values_high.end(), values_h_);
 
-    #pragma omp for schedule(static)
-    for (int i = 0; i < nnz_high_; i++) {
-      colind_high_[i] = colind_high[i];
-      values_high_[i] = values_high[i];
-    }
-  }
+  // #pragma omp parallel num_threads(nthreads_)
+  // {
+  //   #pragma omp for schedule(static)
+  //   //for (int i = 0; i <= nrows_left_; i++) {
+  //   for (int i = 0; i <= nrows_; i++) {
+  //     //      rowptr_h_[i] = 0;
+  //     rowptr_h_[i] = rowptr_high[i];
+  //   }
 
-  int cnt = 0;
-  for (auto &elem : rowind) {
-    rowind_high_[cnt++] = elem.first;
-    rowptr_high_[cnt] = elem.second;
-  }
-
-  for (int i = 1; i < nrows_left_ + 1; ++i) {
-    rowptr_high_[i] += rowptr_high_[i - 1];
-  }
-  assert(rowptr_high_[nrows_left_] == nnz_high_);
+  //   #pragma omp for schedule(static)
+  //   for (int i = 0; i < nnz_h_; i++) {
+  //     colind_h_[i] = colind_high[i];
+  //     values_h_[i] = values_high[i];
+  //   }
+  // }
 }
 
 template <typename IndexT, typename ValueT>
@@ -739,9 +733,9 @@ void CSRMatrix<IndexT, ValueT>::split_by_nrows(int nthreads) {
 }
 
 template <typename IndexT, typename ValueT>
-void CSRMatrix<IndexT, ValueT>::split_by_nnz(int nthreads, bool symmetric) {
+void CSRMatrix<IndexT, ValueT>::split_by_nnz(int nthreads) {
 #ifdef _LOG_INFO
-  if (symmetric)
+  if (symmetric_)
     cout << "[INFO]: splitting lower triangular part of matrix into "
          << nthreads << " partitions" << endl;
   else
@@ -750,9 +744,6 @@ void CSRMatrix<IndexT, ValueT>::split_by_nnz(int nthreads, bool symmetric) {
 #endif
 
   if (!row_split_) {
-    if (hybrid_)
-      row_split_high_ =
-          (IndexT *)internal_alloc((nthreads + 1) * sizeof(IndexT), platform_);
     row_split_ =
         (IndexT *)internal_alloc((nthreads + 1) * sizeof(IndexT), platform_);
   }
@@ -760,17 +751,12 @@ void CSRMatrix<IndexT, ValueT>::split_by_nnz(int nthreads, bool symmetric) {
   if (nthreads_ == 1) {
     row_split_[0] = 0;
     row_split_[1] = nrows_;
-    if (hybrid_) {
-      row_split_high_[0] = 0;
-      row_split_high_[1] = nrows_left_;
-    }
     split_nnz_ = true;
     return;
   }
 
   // Compute the matrix splits.
-  IndexT *row_ptr = (symmetric) ? rowptr_sym_ : rowptr_;
-  int nnz_cnt = (symmetric) ? nnz_lower_ : nnz_;
+  int nnz_cnt = (symmetric_) ? ((nnz_ - nrows_) / 2) : nnz_;
   int nnz_per_split = nnz_cnt / nthreads_;
   int curr_nnz = 0;
   int row_start = 0;
@@ -778,14 +764,55 @@ void CSRMatrix<IndexT, ValueT>::split_by_nnz(int nthreads, bool symmetric) {
   int i;
 
   row_split_[0] = row_start;
-  for (i = 0; i < nrows_; i++) {
-    curr_nnz += row_ptr[i + 1] - row_ptr[i];
-    if ((curr_nnz >= nnz_per_split) && ((i + 1) % BLK_FACTOR == 0)) {
-      row_start = i + 1;
-      curr_nnz = 0;
-      ++split_cnt;
-      if (split_cnt <= nthreads)
-        row_split_[split_cnt] = row_start;
+  if (hybrid_) {
+    nnz_cnt = (nnz_ - nrows_) / 2 + nnz_h_;
+    nnz_per_split = nnz_cnt / nthreads_;
+    for (i = 0; i < nrows_; i++) {
+      int row_nnz = 0;
+      for (int j = rowptr_[i]; j < rowptr_[i + 1]; ++j) {
+        if (colind_[j] < i) {
+          row_nnz++;
+        }
+      }
+      row_nnz += rowptr_h_[i + 1] - rowptr_h_[i];
+      curr_nnz += row_nnz;
+
+      if ((curr_nnz >= nnz_per_split) && ((i + 1) % BLK_FACTOR == 0)) {
+        row_start = i + 1;
+        ++split_cnt;
+        if (split_cnt <= nthreads)
+          row_split_[split_cnt] = row_start;
+        curr_nnz = 0;
+      }
+    }
+  } else if (symmetric_) {
+    for (i = 0; i < nrows_; i++) {
+      int row_nnz = 0;
+      for (int j = rowptr_[i]; j < rowptr_[i + 1]; ++j) {
+        if (colind_[j] < i) {
+          row_nnz++;
+        }
+      }
+      curr_nnz += row_nnz;
+
+      if ((curr_nnz >= nnz_per_split) && ((i + 1) % BLK_FACTOR == 0)) {
+        row_start = i + 1;
+        ++split_cnt;
+        if (split_cnt <= nthreads)
+          row_split_[split_cnt] = row_start;
+        curr_nnz = 0;
+      }
+    }
+  } else {
+    for (i = 0; i < nrows_; i++) {
+      curr_nnz += rowptr_[i + 1] - rowptr_[i];
+      if ((curr_nnz >= nnz_per_split) && ((i + 1) % BLK_FACTOR == 0)) {
+        row_start = i + 1;
+        ++split_cnt;
+        if (split_cnt <= nthreads)
+          row_split_[split_cnt] = row_start;
+        curr_nnz = 0;
+      }
     }
   }
 
@@ -804,44 +831,6 @@ void CSRMatrix<IndexT, ValueT>::split_by_nnz(int nthreads, bool symmetric) {
     row_split_[i] = nrows_;
   }
 
-  if (hybrid_) {
-    // Compute the matrix splits.
-    IndexT *row_ptr = rowptr_high_;
-    int nnz_cnt = nnz_high_;
-    int nnz_per_split = nnz_cnt / nthreads_;
-    int curr_nnz = 0;
-    int row_start = 0;
-    int split_cnt = 0;
-    int i;
-
-    row_split_high_[0] = row_start;
-    for (i = 0; i < nrows_left_; i++) {
-      curr_nnz += row_ptr[i + 1] - row_ptr[i];
-      if ((curr_nnz >= nnz_per_split) && ((i + 1) % 1 == 0)) {
-        row_start = i + 1;
-        curr_nnz = 0;
-        ++split_cnt;
-        if (split_cnt <= nthreads)
-          row_split_high_[split_cnt] = row_start;
-      }
-    }
-
-    // Fill the last split with remaining elements
-    if (curr_nnz < nnz_per_split && split_cnt <= nthreads) {
-      row_split_high_[++split_cnt] = nrows_left_;
-    }
-
-    // If there are any remaining rows merge them in last partition
-    if (split_cnt > nthreads_) {
-      row_split_high_[nthreads_] = nrows_left_;
-    }
-
-    // If there are remaining threads create empty partitions
-    for (int i = split_cnt + 1; i <= nthreads; i++) {
-      row_split_high_[i] = nrows_left_;
-    }
-  }
-
   split_nnz_ = true;
 }
 
@@ -856,8 +845,9 @@ void CSRMatrix<IndexT, ValueT>::atomics() {
 
   diagonal_ = (ValueT *)internal_alloc(nrows_ * sizeof(ValueT));
   memset(diagonal_, 0, nrows_ * sizeof(IndexT));
-  sym_cmp_data_.resize(nthreads_);
-  #pragma omp parallel
+  sym_cmp_data_ = (SymmetryCompressionData<IndexT, ValueT> **)internal_alloc(
+      nthreads_ * sizeof(SymmetryCompressionData<IndexT, ValueT> *));
+  #pragma omp parallel num_threads(nthreads_)
   {
     int tid = omp_get_thread_num();
     sym_cmp_data_[tid] = new SymmetryCompressionData<IndexT, ValueT>;
@@ -899,6 +889,12 @@ void CSRMatrix<IndexT, ValueT>::atomics() {
     assert(data->rowptr_[nrows] == static_cast<int>(values_sym.size()));
     data->nnz_lower_ = values_sym.size();
     data->nnz_diag_ = nnz_diag;
+    #pragma omp critical
+    {
+      nnz_lower_ += data->nnz_lower_;
+      nnz_diag_ += data->nnz_diag_;
+    }
+
     data->colind_ =
         (IndexT *)internal_alloc(data->nnz_lower_ * sizeof(IndexT), platform_);
     data->values_ =
@@ -919,12 +915,6 @@ void CSRMatrix<IndexT, ValueT>::atomics() {
     values_sym.shrink_to_fit();
   }
 
-  for (int tid = 0; tid < nthreads_; ++tid) {
-    SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[tid];
-    nnz_lower_ += data->nnz_lower_;
-    nnz_diag_ += data->nnz_diag_;
-  }
-
   cmp_symmetry_ = true;
   atomics_ = true;
 }
@@ -942,8 +932,9 @@ void CSRMatrix<IndexT, ValueT>::effective_ranges() {
 
   diagonal_ = (ValueT *)internal_alloc(nrows_ * sizeof(ValueT));
   memset(diagonal_, 0, nrows_ * sizeof(IndexT));
-  sym_cmp_data_.resize(nthreads_);
-  #pragma omp parallel
+  sym_cmp_data_ = (SymmetryCompressionData<IndexT, ValueT> **)internal_alloc(
+      nthreads_ * sizeof(SymmetryCompressionData<IndexT, ValueT> *));
+  #pragma omp parallel num_threads(nthreads_)
   {
     int tid = omp_get_thread_num();
     sym_cmp_data_[tid] = new SymmetryCompressionData<IndexT, ValueT>;
@@ -985,6 +976,12 @@ void CSRMatrix<IndexT, ValueT>::effective_ranges() {
     assert(data->rowptr_[nrows] == static_cast<int>(values_sym.size()));
     data->nnz_lower_ = values_sym.size();
     data->nnz_diag_ = nnz_diag;
+    #pragma omp critical
+    {
+      nnz_lower_ += data->nnz_lower_;
+      nnz_diag_ += data->nnz_diag_;
+    }
+
     data->colind_ =
         (IndexT *)internal_alloc(data->nnz_lower_ * sizeof(IndexT), platform_);
     data->values_ =
@@ -1009,12 +1006,6 @@ void CSRMatrix<IndexT, ValueT>::effective_ranges() {
     values_sym.clear();
     colind_sym.shrink_to_fit();
     values_sym.shrink_to_fit();
-  }
-
-  for (int tid = 0; tid < nthreads_; ++tid) {
-    SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[tid];
-    nnz_lower_ += data->nnz_lower_;
-    nnz_diag_ += data->nnz_diag_;
   }
 
   cmp_symmetry_ = true;
@@ -1064,8 +1055,9 @@ void CSRMatrix<IndexT, ValueT>::local_vectors_indexing() {
   diagonal_ = (ValueT *)internal_alloc(nrows_ * sizeof(ValueT));
   memset(diagonal_, 0, nrows_ * sizeof(IndexT));
   y_local_ = (ValueT **)internal_alloc(nthreads_ * sizeof(ValueT *), platform_);
-  sym_cmp_data_.resize(nthreads_);
-  #pragma omp parallel
+  sym_cmp_data_ = (SymmetryCompressionData<IndexT, ValueT> **)internal_alloc(
+      nthreads_ * sizeof(SymmetryCompressionData<IndexT, ValueT> *));
+  #pragma omp parallel num_threads(nthreads_)
   {
     int tid = omp_get_thread_num();
     sym_cmp_data_[tid] = new SymmetryCompressionData<IndexT, ValueT>;
@@ -1106,6 +1098,12 @@ void CSRMatrix<IndexT, ValueT>::local_vectors_indexing() {
     assert(data->rowptr_[nrows] == static_cast<int>(values_sym.size()));
     data->nnz_lower_ = values_sym.size();
     data->nnz_diag_ = nnz_diag;
+    #pragma omp critical
+    {
+      nnz_lower_ += data->nnz_lower_;
+      nnz_diag_ += data->nnz_diag_;
+    }
+
     data->colind_ =
         (IndexT *)internal_alloc(data->nnz_lower_ * sizeof(IndexT), platform_);
     data->values_ =
@@ -1135,11 +1133,11 @@ void CSRMatrix<IndexT, ValueT>::local_vectors_indexing() {
     values_sym.shrink_to_fit();
   }
 
-  for (int tid = 0; tid < nthreads_; ++tid) {
-    SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[tid];
-    nnz_lower_ += data->nnz_lower_;
-    nnz_diag_ += data->nnz_diag_;
-  }
+  // for (int tid = 0; tid < nthreads_; ++tid) {
+  //   SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[tid];
+  //   nnz_lower_ += data->nnz_lower_;
+  //   nnz_diag_ += data->nnz_diag_;
+  // }
 
   cmp_symmetry_ = true;
 
@@ -1282,6 +1280,7 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_apriori() {
        << endl;
 #endif
 
+  // FIXME first touch
   rowptr_sym_ = (IndexT *)internal_alloc((nrows_ + 1) * sizeof(IndexT));
   memset(rowptr_sym_, 0, (nrows_ + 1) * sizeof(IndexT));
   diagonal_ = (ValueT *)internal_alloc(nrows_ * sizeof(ValueT));
@@ -1483,8 +1482,9 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
   double tstart, tstop;
   tstart = omp_get_wtime();
 #endif
-  sym_cmp_data_.resize(nthreads_);
-  #pragma omp parallel
+  sym_cmp_data_ = (SymmetryCompressionData<IndexT, ValueT> **)internal_alloc(
+      nthreads_ * sizeof(SymmetryCompressionData<IndexT, ValueT> *));
+  #pragma omp parallel num_threads(nthreads_)
   {
     int tid = omp_get_thread_num();
     sym_cmp_data_[tid] = new SymmetryCompressionData<IndexT, ValueT>;
@@ -1527,6 +1527,11 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
     assert(data->rowptr_[nrows] == static_cast<int>(values_sym.size()));
     data->nnz_lower_ = values_sym.size();
     data->nnz_diag_ = nnz_diag;
+    #pragma omp critical
+    {
+      nnz_lower_ += data->nnz_lower_;
+      nnz_diag_ += data->nnz_diag_;
+    }
     data->colind_ =
         (IndexT *)internal_alloc(data->nnz_lower_ * sizeof(IndexT), platform_);
     data->values_ =
@@ -1542,40 +1547,28 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
     values_sym.shrink_to_fit();
 
     if (hybrid_) {
-      int nrows = row_split_high_[tid + 1] - row_split_high_[tid];
-      int row_offset = row_split_high_[tid];
-      data->nrows_high_ = nrows;
-      data->rowind_high_ = (IndexT *)internal_alloc(nrows * sizeof(IndexT));
-      data->rowptr_high_ =
-          (IndexT *)internal_alloc((nrows + 1) * sizeof(IndexT));
-      memset(data->rowptr_high_, 0, (nrows + 1) * sizeof(IndexT));
-
+      data->rowptr_h_ = (IndexT *)internal_alloc((nrows + 1) * sizeof(IndexT));
+      memset(data->rowptr_h_, 0, (nrows + 1) * sizeof(IndexT));
       vector<IndexT> colind_high;
       vector<ValueT> values_high;
-      data->rowptr_high_[0] = 0;
-      for (int i = row_split_high_[tid]; i < row_split_high_[tid + 1]; ++i) {
-        data->rowind_high_[i - row_offset] = rowind_high_[i];
-        for (int j = rowptr_high_[i]; j < rowptr_high_[i + 1]; ++j) {
-          IndexT col = colind_high_[j];
-          data->rowptr_high_[i + 1 - row_offset]++;
-          colind_high.push_back(col);
-          values_high.push_back(values_high_[j]);
+      data->rowptr_h_[0] = 0;
+      for (int i = row_split_[tid]; i < row_split_[tid + 1]; ++i) {
+        for (int j = rowptr_h_[i]; j < rowptr_h_[i + 1]; ++j) {
+          data->rowptr_h_[i + 1 - row_offset]++;
+          colind_high.push_back(colind_h_[j]);
+          values_high.push_back(values_h_[j]);
         }
       }
-
       for (int i = 1; i <= nrows; ++i) {
-        data->rowptr_high_[i] += data->rowptr_high_[i - 1];
+        data->rowptr_h_[i] += data->rowptr_h_[i - 1];
       }
-
-      assert(data->rowptr_high_[nrows] == static_cast<int>(values_high.size()));
-      data->nnz_high_ = values_high.size();
-      data->colind_high_ =
-          (IndexT *)internal_alloc(data->nnz_high_ * sizeof(IndexT), platform_);
-      data->values_high_ =
-          (ValueT *)internal_alloc(data->nnz_high_ * sizeof(ValueT), platform_);
-
-      std::move(colind_high.begin(), colind_high.end(), data->colind_high_);
-      std::move(values_high.begin(), values_high.end(), data->values_high_);
+      data->nnz_h_ = values_high.size();
+      data->colind_h_ =
+          (IndexT *)internal_alloc(data->nnz_h_ * sizeof(IndexT), platform_);
+      data->values_h_ =
+          (ValueT *)internal_alloc(data->nnz_h_ * sizeof(ValueT), platform_);
+      std::move(colind_high.begin(), colind_high.end(), data->colind_h_);
+      std::move(values_high.begin(), values_high.end(), data->values_h_);
 
       // Cleanup
       colind_high.clear();
@@ -1585,11 +1578,11 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
     }
   }
 
-  for (int tid = 0; tid < nthreads_; ++tid) {
-    SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[tid];
-    nnz_lower_ += data->nnz_lower_;
-    nnz_diag_ += data->nnz_diag_;
-  }
+  // for (int tid = 0; tid < nthreads_; ++tid) {
+  //   SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[tid];
+  //   nnz_lower_ += data->nnz_lower_;
+  //   nnz_diag_ += data->nnz_diag_;
+  // }
 
   cmp_symmetry_ = true;
 
@@ -1608,7 +1601,7 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
   tbb::concurrent_vector<tbb::concurrent_vector<pair<int, int>>> indirect(
       blk_rows);
 
-  #pragma omp parallel
+  #pragma omp parallel num_threads(nthreads_)
   {
     int t = omp_get_thread_num();
     SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[t];
@@ -1617,8 +1610,11 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
       IndexT blk_row = i >> BLK_BITS;
       vertices[blk_row].vid = blk_row;
       vertices[blk_row].tid = t;
-      vertices[blk_row].nnz =
+      vertices[blk_row].nnz +=
           data->rowptr_[i - row_offset + 1] - data->rowptr_[i - row_offset];
+      if (hybrid_)
+        vertices[blk_row].nnz += data->rowptr_h_[i - row_offset + 1] -
+                                 data->rowptr_h_[i - row_offset];
       IndexT prev_blk_col = -1;
       for (int j = data->rowptr_[i - row_offset];
            j < data->rowptr_[i + 1 - row_offset]; ++j) {
@@ -1666,11 +1662,52 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
 
   const int V = g.size();
   vector<int> color_map(V, V - 1);
-  color(g, color_map);
-  // color(g, vertices, color_map);
-  // tbb::concurrent_vector<int> color_map(V, V - 1);
-  // parallel_color(g, color_map);
-  // parallel_color(g, vertices, color_map);
+  // color(g, color_map);
+  color(g, vertices, color_map);
+// tbb::concurrent_vector<int> color_map(V, V - 1);
+// parallel_color(g, color_map);
+// parallel_color(g, vertices, color_map);
+
+#ifndef _USE_BARRIER
+  // Find thread dependency graph between colors.
+  // Need to check if a row in color C is touched in color C-1 by others threads
+  // It is enough to check if the neighbors of the correpsonding vertex are
+  // colored with the previous color and are assigned to different threads
+  bool cnfls[ncolors_][nthreads_][nthreads_];
+  for (int i = 0; i < ncolors_; i++) {
+    for (int t1 = 0; t1 < nthreads_; t1++) {
+      for (int t2 = 0; t2 < nthreads_; t2++) {
+        cnfls[i][t1][t2] = false;
+      }
+    }
+  }
+
+  // FIXME: optimize this
+  for (int i = 0; i < V; i++) {
+    int c_i = color_map[i];
+    if (c_i > 0) {
+      const auto &neighbors = g[i];
+      for (size_t j = 0; j < neighbors.size(); j++) {
+        int c_j = color_map[neighbors[j]];
+        // Mark who I need to wait for before proceeding to current color
+        if ((c_j == (c_i - 1)) &&
+            (vertices[i].tid != vertices[neighbors[j]].tid))
+          cnfls[c_i][vertices[i].tid][vertices[neighbors[j]].tid] = true;
+      }
+    }
+  }
+
+#ifdef _LOG_INFO
+  for (int i = 0; i < ncolors_; i++) {
+    for (int t1 = 0; t1 < nthreads_; t1++) {
+      for (int t2 = 0; t2 < nthreads_; t2++) {
+        if (cnfls[i][t1][t2])
+          cout << "(C" << i << ", T" << t1 << ", T" << t2 << ")" << endl;
+      }
+    }
+  }
+#endif
+#endif
 
   // Find row sets per thread per color
   #pragma omp parallel num_threads(nthreads_)
@@ -1679,6 +1716,17 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
     SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[tid];
 
     vector<vector<IndexT>> rowind(ncolors_);
+
+#ifndef _USE_BARRIER
+    // Determine dependency graph
+    for (int c = 0; c < ncolors_; c++) {
+      for (int t = 0; t < nthreads_; t++) {
+        if (cnfls[c][tid][t]) {
+          data->deps_[c].push_back(t);
+        }
+      }
+    }
+#endif
 
     // Find active row indices per color
     for (int i = row_split_[tid]; i < row_split_[tid + 1]; i++) {
@@ -1719,6 +1767,8 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
     // Allocate auxiliary arrays
     data->ncolors_ = ncolors_;
     data->nranges_ = nranges;
+    #pragma omp critical
+    { nranges_ += data->nranges_; }
     data->range_ptr_ =
         (IndexT *)internal_alloc((ncolors_ + 1) * sizeof(IndexT));
     data->range_start_ = (IndexT *)internal_alloc(nranges * sizeof(IndexT));
@@ -1740,11 +1790,24 @@ void CSRMatrix<IndexT, ValueT>::conflict_free_aposteriori() {
     assert(cnt == nranges);
   }
 
-  nranges_ = 0;
-  for (int t = 0; t < nthreads_; t++) {
-    SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[t];
-    nranges_ += data->nranges_;
-  }
+// nranges_ = 0;
+// for (int t = 0; t < nthreads_; t++) {
+//   //    cout << "T" << t << endl;
+//   SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[t];
+//   nranges_ += data->nranges_;
+//   // for (int c = 0; c < ncolors_; ++c) {
+//   //   for (int r = data->range_ptr_[c]; r < data->range_ptr_[c + 1]; ++r) {
+//   // 	size_t cnt = 0;
+//   //     for (IndexT i = data->range_start_[r]; i <= data->range_end_[r];
+//   ++i)
+//   //     {
+//   // 	  cnt += data->rowptr_[i+1] - data->rowptr_[i];
+//   // 	}
+//   // 	//cout << "Number of nonzeros in range " << r << ": " << cnt <<
+//   endl;
+//   //   }
+//   // }
+// }
 
 #ifdef _LOG_INFO
   tstop = omp_get_wtime();
@@ -1774,14 +1837,12 @@ void CSRMatrix<IndexT, ValueT>::compress_symmetry() {
     colind_ = nullptr;
     values_ = nullptr;
     if (hybrid_) {
-      internal_free(rowptr_high_, platform_);
-      internal_free(rowind_high_, platform_);
-      internal_free(colind_high_, platform_);
-      internal_free(values_high_, platform_);
-      rowptr_high_ = nullptr;
-      rowind_high_ = nullptr;
-      colind_high_ = nullptr;
-      values_high_ = nullptr;
+      internal_free(rowptr_h_, platform_);
+      internal_free(colind_h_, platform_);
+      internal_free(values_h_, platform_);
+      rowptr_h_ = nullptr;
+      colind_h_ = nullptr;
+      values_h_ = nullptr;
     }
   }
 }
@@ -2072,7 +2133,7 @@ void CSRMatrix<IndexT, ValueT>::color(const ColoringGraph &g,
     int j = 0;
 
     // Scan through all useable colors, find the smallest possible
-    // color that is not used by neighbors.  Note that if mark[j]
+    // color that is not used by neighbors. Note that if mark[j]
     // is equal to i, color j is used by one of the current vertex's
     // neighbors.
     while (j < max_color && mark[j] == i)
@@ -2090,96 +2151,111 @@ void CSRMatrix<IndexT, ValueT>::color(const ColoringGraph &g,
   }
 
   // Balancing phase
-  // Rebalance every processor individually
-  for (int t = 0; t < nthreads_; t++) {
+  #pragma omp parallel num_threads(nthreads_)
+  {
+    int tid = omp_get_thread_num();
     int total_load = 0;
     int mean_load = 0;
     std::vector<int> load(max_color);
-    int balance_deviation[max_color] = {0};
-    std::vector<std::vector<WeightedVertex>> bin(max_color);
+    std::vector<int> balance_deviation(max_color, 0);
+    std::vector<std::priority_queue<WeightedVertex, std::vector<WeightedVertex>,
+                                    CompareWeightedVertex>>
+        bin(max_color);
 
     // Find total weight and vertices per color, total weight over all colors
-    // and balance deviation for this processor
     for (int i = 0; i < V; i++) {
-      if (v[i].tid == t) {
+      if (v[i].tid == tid) {
         total_load += v[i].nnz;
         load[color[i]] += v[i].nnz;
-        bin[color[i]].push_back(v[i]);
+        bin[color[i]].push(v[i]);
       }
     }
     mean_load = total_load / max_color;
-    for (int c = 0; c < max_color; c++) {
-      balance_deviation[c] = load[c] - mean_load;
-    }
 
-// Sort vertices per color bin in descending order of nonzeros
-// for (int c = 0; c < max_color; c++) {
-//   std::sort(bin[c].begin(), bin[c].end());
-// }
-
-#ifdef _LOG_INFO
-    std::cout << std::fixed;
-    std::cout << std::setprecision(2);
-    cout << "[INFO]: T" << t << " load distribution before balancing = { ";
-    for (int c = 0; c < max_color; c++) {
-      cout << ((float)load[c] / total_load) * 100 << "% ";
-    }
-    cout << "}" << endl;
-#endif
-
-    // Minimize balance deviation of each color c
-    // The deviance reduction heuristic works by moving vertices from one color
-    // with positive deviation to another legal color with a lower deviation
-    // when this exchange with reduce the total deviation.
-    // This is similar to a bin-packing problem, with the added constraint that
-    // a vertex cannot be placed in the same bin as its neighbors.
-    // Find color with largest positive deviation
-    // unsigned int max_deviation = *max_element(balance_deviation,
-    // balance_deviation + max_color);
-    int max_c =
-        distance(balance_deviation,
-                 max_element(balance_deviation, balance_deviation + max_color));
-    int i = 0;
-    // FIXME: tune tolerance
-    const int tol = 0;
-    int no_vertices = static_cast<int>(bin[max_c].size());
-    while (load[max_c] - mean_load > tol && i < no_vertices) {
-      int current = bin[max_c][i].vid;
-      // Find eligible colors for this vertex
-      bool used[max_color] = {false};
-      used[max_c] = true;
-      const auto &neighbors = g[current];
-      for (size_t j = 0; j < neighbors.size(); j++) {
-        assert(color[neighbors[j]] < max_color);
-        used[color[neighbors[j]]] = true;
+    for (int step = 0; step < BALANCING_STEPS; step++) {
+      // Find balance deviation for this processor
+      for (int c = 0; c < max_color; c++) {
+        balance_deviation[c] = load[c] - mean_load;
       }
 
-      // Re-color with the smallest eligible bin
-      int min_c = max_c;
-      int min_load = load[max_c];
-      for (int c = 0; c < max_color; c++) {
-        if (!used[c] && load[c] < min_load) {
-          min_c = c;
-          min_load = load[c];
+#ifdef _LOG_INFO
+      #pragma omp critical
+      {
+        if (step == 0) {
+          std::cout << std::fixed;
+          std::cout << std::setprecision(2);
+          cout << "[INFO]: T" << tid
+               << " load distribution before balancing = { ";
+          for (int c = 0; c < max_color; c++) {
+            cout << ((float)load[c] / total_load) * 100 << "% ";
+          }
+          cout << "}" << endl;
         }
       }
-      color[current] = min_c;
-      load[max_c] -= v[current].nnz;
-      load[min_c] += v[current].nnz;
+#endif
 
-      i++;
+      // Minimize balance deviation of each color c
+      // The deviance reduction heuristic works by moving vertices from one
+      // color with positive deviation to another legal color with a lower
+      // deviation when this exchange will reduce the total deviation.
+      // This is similar to a bin-packing problem, with the added constraint
+      // that a vertex cannot be placed in the same bin as its neighbors.
+      // Find color with largest positive deviation
+      int max_c = distance(
+          balance_deviation.begin(),
+          max_element(balance_deviation.begin(), balance_deviation.end()));
+      int i = 0;
+      const int tol = 0;
+      int no_vertices = static_cast<int>(bin[max_c].size());
+      while (load[max_c] - mean_load > tol && i < no_vertices) {
+        WeightedVertex current = bin[max_c].top();
+        // Find eligible colors for this vertex
+        std::vector<bool> used(max_color, false);
+        used[max_c] = true;
+        const auto &neighbors = g[current.vid];
+        for (size_t j = 0; j < neighbors.size(); j++) {
+          used[color[neighbors[j]]] = true;
+        }
+
+        // Re-color with the smallest eligible bin
+        int min_c = max_c;
+        int min_load = load[max_c];
+        for (int c = 0; c < max_color; c++) {
+          if (!used[c] && load[c] < min_load) {
+            min_c = c;
+            min_load = load[c];
+          }
+        }
+
+        if (min_c != max_c) {
+          // Update color bins
+          color[current.vid] = min_c;
+          load[max_c] -= current.nnz;
+          load[min_c] += current.nnz;
+          bin[max_c].pop();
+          bin[min_c].push(current);
+        }
+
+        i++;
+      }
     }
 
 #ifdef _LOG_INFO
-    cout << "[INFO]: T" << t << " load distribution after balancing = { ";
-    for (int c = 0; c < max_color; c++) {
-      cout << ((float)load[c] / total_load) * 100 << "% ";
+    #pragma omp critical
+    {
+      cout << "[INFO]: T" << tid << " load distribution after balancing = { ";
+      for (int c = 0; c < max_color; c++) {
+        cout << ((float)load[c] / total_load) * 100 << "% ";
+      }
+      cout << "}" << endl;
     }
-    cout << "}" << endl;
 #endif
   }
 
   ncolors_ = max_color;
+  for (int i = 0; i < V; i++) {
+    assert(color[i] < ncolors_);
+  }
 
 #ifdef _LOG_INFO
   float color_stop = omp_get_wtime();
@@ -2456,7 +2532,7 @@ void CSRMatrix<IndexT, ValueT>::parallel_color(
       used[max_c] = true;
       const auto &neighbors = g[current];
       for (size_t j = 0; j < neighbors.size(); j++) {
-        assert(color[neighbors[j]] < colors_);
+        assert(color[neighbors[j]] < ncolors_);
         used[color[neighbors[j]]] = true;
       }
 
@@ -2499,7 +2575,7 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_vanilla(ValueT *__restrict y,
   for (int i = 0; i < nrows_; ++i) {
     ValueT y_tmp = 0.0;
 
-    PRAGMA_IVDEP
+    #pragma omp simd reduction(+: y_tmp)
     for (IndexT j = rowptr_[i]; j < rowptr_[i + 1]; ++j) {
       y_tmp += values_[j] * x[colind_[j]];
     }
@@ -2517,7 +2593,7 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_split_nnz(ValueT *__restrict y,
     for (IndexT i = row_split_[tid]; i < row_split_[tid + 1]; ++i) {
       register ValueT y_tmp = 0;
 
-      PRAGMA_IVDEP
+      #pragma omp simd reduction(+: y_tmp)
       for (IndexT j = rowptr_[i]; j < rowptr_[i + 1]; ++j) {
 #if defined(_PREFETCH) && defined(_INTEL_COMPILER)
         /* T0: prefetch into L1, temporal with respect to all level caches */
@@ -2545,7 +2621,7 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_serial(ValueT *__restrict y,
   for (int i = 0; i < nrows_; ++i) {
     ValueT y_tmp = diagonal[i] * x[i];
 
-    PRAGMA_IVDEP
+    #pragma omp simd reduction(+: y_tmp)
     for (IndexT j = rowptr[i]; j < rowptr[i + 1]; ++j) {
       IndexT col = colind[j];
       ValueT val = values[j];
@@ -2581,7 +2657,6 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_atomics(ValueT *__restrict y,
     for (int i = 0; i < data->nrows_; ++i) {
       ValueT y_tmp = 0;
 
-      PRAGMA_IVDEP
       for (IndexT j = rowptr[i]; j < rowptr[i + 1]; ++j) {
         IndexT col = colind[j];
         ValueT val = values[j];
@@ -2613,12 +2688,16 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_effective_ranges(
     ValueT *y_local = data->local_vector_;
     if (tid == 0)
       y_local = y;
-    memset(y_local, 0.0, row_split_[tid] * sizeof(ValueT));
 
     for (int i = 0; i < data->nrows_; ++i) {
-      ValueT y_tmp = diagonal[i] * x[i + row_offset];
+      y[i + row_offset] = diagonal[i] * x[i + row_offset];
+    }
+    #pragma omp barrier
 
-      PRAGMA_IVDEP
+    for (int i = 0; i < data->nrows_; ++i) {
+      register ValueT y_tmp = 0;
+
+      #pragma omp simd reduction(+: y_tmp)
       for (IndexT j = rowptr[i]; j < rowptr[i + 1]; ++j) {
         IndexT col = colind[j];
         ValueT val = values[j];
@@ -2630,17 +2709,20 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_effective_ranges(
       }
 
       /* Reduction on y */
-      y[i + row_offset] = y_tmp;
+      y[i + row_offset] += y_tmp;
     }
-  }
 
-  // Reduction of conflicts phase
-  for (int tid = 1; tid < nthreads_; ++tid) {
-    SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[tid];
-    ValueT *y_local = data->local_vector_;
-    #pragma omp parallel for schedule(static) num_threads(nthreads_)
-    for (IndexT i = 0; i < row_split_[tid]; ++i) {
-      y[i] += y_local[i];
+    #pragma omp barrier
+
+    // Reduction of conflicts phase
+    for (int tid = 1; tid < nthreads_; ++tid) {
+      SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[tid];
+      ValueT *y_local = data->local_vector_;
+      #pragma omp for schedule(static)
+      for (IndexT i = 0; i < row_split_[tid]; ++i) {
+        y[i] += y_local[i];
+        y_local[i] = 0;
+      }
     }
   }
 }
@@ -2667,9 +2749,14 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_local_vectors_indexing(
     }
 
     for (int i = 0; i < data->nrows_; ++i) {
-      ValueT y_tmp = diagonal[i] * x[i + row_offset];
+      y[i + row_offset] = diagonal[i] * x[i + row_offset];
+    }
+    #pragma omp barrier
 
-      PRAGMA_IVDEP
+    for (int i = 0; i < data->nrows_; ++i) {
+      register ValueT y_tmp = 0;
+
+      #pragma omp simd reduction(+: y_tmp)
       for (IndexT j = rowptr[i]; j < rowptr[i + 1]; ++j) {
         IndexT col = colind[j];
         ValueT val = values[j];
@@ -2681,12 +2768,13 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_local_vectors_indexing(
       }
 
       /* Reduction on y */
-      y[i + row_offset] = y_tmp;
+      y[i + row_offset] += y_tmp;
     }
 
     #pragma omp barrier
-    for (int i = data->map_start_; i < data->map_end_; ++i)
+    for (int i = data->map_start_; i < data->map_end_; ++i) {
       y[cnfl_map_->pos[i]] += y_local_[cnfl_map_->cpu[i]][cnfl_map_->pos[i]];
+    }
   }
 }
 
@@ -2702,7 +2790,7 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free_apriori(
         register IndexT row = rowind_sym_[i];
         register ValueT y_tmp = diagonal_[row] * x[row];
 
-        PRAGMA_IVDEP
+        #pragma omp simd reduction(+: y_tmp)
         for (IndexT j = rowptr_sym_[row]; j < rowptr_sym_[row + 1]; ++j) {
           IndexT col = colind_sym_[j];
           ValueT val = values_sym_[j];
@@ -2716,6 +2804,11 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free_apriori(
     }
   }
 }
+
+#ifndef _USE_BARRIER
+// False indicates that the thread is still computing
+extern std::atomic<bool> done[MAX_THREADS][MAX_COLORS];
+#endif
 
 template <typename IndexT, typename ValueT>
 void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free(
@@ -2734,17 +2827,29 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free(
     IndexT *range_start = data->range_start_;
     IndexT *range_end = data->range_end_;
 
+#ifndef _USE_BARRIER
+    for (int c = 0; c < ncolors_; ++c) {
+      done[tid][c].store(false);
+    }
+#endif
+
     for (int i = 0; i < data->nrows_; ++i) {
       y[i + row_offset] = diagonal[i] * x[i + row_offset];
     }
     #pragma omp barrier
 
     for (int c = 0; c < ncolors_; ++c) {
+#ifndef _USE_BARRIER
+      // Wait until my dependencies have finished the previous phase
+      for (size_t i = 0; i < data->deps_[c].size(); i++)
+        while (!done[data->deps_[c][i]][c - 1])
+          ;
+#endif
       for (int r = range_ptr[c]; r < range_ptr[c + 1]; ++r) {
         for (IndexT i = range_start[r]; i <= range_end[r]; ++i) {
           register ValueT y_tmp = 0;
 
-          PRAGMA_IVDEP
+          #pragma omp simd reduction(+: y_tmp)
           for (IndexT j = rowptr[i]; j < rowptr[i + 1]; ++j) {
             IndexT col = colind[j];
             ValueT val = values[j];
@@ -2757,7 +2862,12 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free(
         }
       }
 
-      #pragma omp barrier
+#ifdef _USE_BARRIER
+#pragma omp barrier
+#else
+      // Inform threads that depend on me that I have completed this phase
+      done[tid][c] = true;
+#endif
     }
   }
 }
@@ -2778,6 +2888,9 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free_hyb(
     IndexT *range_ptr = data->range_ptr_;
     IndexT *range_start = data->range_start_;
     IndexT *range_end = data->range_end_;
+    IndexT *rowptr_h = data->rowptr_h_;
+    IndexT *colind_h = data->colind_h_;
+    ValueT *values_h = data->values_h_;
 
     for (int i = 0; i < data->nrows_; ++i) {
       y[i + row_offset] = diagonal[i] * x[i + row_offset];
@@ -2789,12 +2902,17 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free_hyb(
         for (IndexT i = range_start[r]; i <= range_end[r]; ++i) {
           register ValueT y_tmp = 0;
 
-          PRAGMA_IVDEP
+          #pragma omp simd reduction(+: y_tmp)
           for (IndexT j = rowptr[i]; j < rowptr[i + 1]; ++j) {
             IndexT col = colind[j];
             ValueT val = values[j];
             y_tmp += val * x[col];
             y[col] += val * x[i + row_offset];
+          }
+
+          #pragma omp simd reduction(+: y_tmp)
+          for (IndexT j = rowptr_h[i]; j < rowptr_h[i + 1]; ++j) {
+            y_tmp += values_h[j] * x[colind_h[j]];
           }
 
           /* Reduction on y */
@@ -2803,106 +2921,6 @@ void CSRMatrix<IndexT, ValueT>::cpu_mv_sym_conflict_free_hyb(
       }
 
       #pragma omp barrier
-    }
-
-    for (IndexT i = 0; i < data->nrows_high_; ++i) {
-      IndexT row = data->rowind_high_[i];
-      register ValueT y_tmp = 0;
-
-      PRAGMA_IVDEP
-      for (IndexT j = data->rowptr_high_[i]; j < data->rowptr_high_[i + 1];
-           ++j) {
-        y_tmp += data->values_high_[j] * x[data->colind_high_[j]];
-      }
-
-      /* Reduction on y */
-      y[row] += y_tmp;
-    }
-  }
-}
-
-template <typename IndexT, typename ValueT>
-void CSRMatrix<IndexT, ValueT>::bench_conflict_free_nobarrier(
-    ValueT *__restrict y, const ValueT *__restrict x) {
-
-  #pragma omp parallel num_threads(nthreads_)
-  {
-    int tid = omp_get_thread_num();
-    IndexT row_offset = row_split_[tid];
-    SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[tid];
-    IndexT *rowptr = data->rowptr_;
-    IndexT *colind = data->colind_;
-    ValueT *values = data->values_;
-    ValueT *diagonal = data->diagonal_;
-    IndexT *range_ptr = data->range_ptr_;
-    IndexT *range_start = data->range_start_;
-    IndexT *range_end = data->range_end_;
-
-    for (int i = 0; i < data->nrows_; ++i) {
-      y[i + row_offset] = diagonal[i] * x[i + row_offset];
-    }
-    #pragma omp barrier
-
-    for (int c = 0; c < ncolors_; ++c) {
-      for (int r = range_ptr[c]; r < range_ptr[c + 1]; ++r) {
-        for (IndexT i = range_start[r]; i <= range_end[r]; ++i) {
-          register ValueT y_tmp = 0;
-
-          PRAGMA_IVDEP
-          for (IndexT j = rowptr[i]; j < rowptr[i + 1]; ++j) {
-            IndexT col = colind[j];
-            ValueT val = values[j];
-            y_tmp += val * x[col];
-            y[col] += val * x[i + row_offset];
-          }
-
-          /* Reduction on y */
-          y[i + row_offset] += y_tmp;
-        }
-      }
-    }
-  }
-}
-
-template <typename IndexT, typename ValueT>
-void CSRMatrix<IndexT, ValueT>::bench_conflict_free_nobarrier_noxmiss(
-    ValueT *__restrict y, const ValueT *__restrict x) {
-
-  #pragma omp parallel num_threads(nthreads_)
-  {
-    int tid = omp_get_thread_num();
-    IndexT row_offset = row_split_[tid];
-    SymmetryCompressionData<IndexT, ValueT> *data = sym_cmp_data_[tid];
-    IndexT *rowptr = data->rowptr_;
-    IndexT *colind = data->colind_;
-    ValueT *values = data->values_;
-    ValueT *diagonal = data->diagonal_;
-    IndexT *range_ptr = data->range_ptr_;
-    IndexT *range_start = data->range_start_;
-    IndexT *range_end = data->range_end_;
-
-    for (int i = 0; i < data->nrows_; ++i) {
-      y[i + row_offset] = diagonal[i] * x[i + row_offset];
-    }
-    #pragma omp barrier
-
-    for (int c = 0; c < ncolors_; ++c) {
-      for (int r = range_ptr[c]; r < range_ptr[c + 1]; ++r) {
-        for (IndexT i = range_start[r]; i <= range_end[r]; ++i) {
-          register ValueT y_tmp = 0;
-
-          PRAGMA_IVDEP
-          for (IndexT j = rowptr[i]; j < rowptr[i + 1]; ++j) {
-            IndexT col = colind[j];
-            ValueT val = values[j];
-            y_tmp += val * x[i + row_offset];
-            y[col] += val * x[i + row_offset];
-          }
-
-          /* Reduction on y */
-          y[i + row_offset] += y_tmp;
-        }
-      }
     }
   }
 }

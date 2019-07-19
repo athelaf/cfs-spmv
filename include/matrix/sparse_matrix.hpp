@@ -28,26 +28,25 @@ public:
   // Multiplication with dense vector
   virtual void dense_vector_multiply(ValueT *__restrict y,
                                      const ValueT *__restrict x) = 0;
+  // Factory functions
+  // Factory method for initializing a sparse matrix from an MMF file on disk
+  static SparseMatrix<IndexT, ValueT> *
+  create(const string &filename, Format format = Format::coo,
+         Platform platform = Platform::cpu) {
+    if (format == Format::csr) {
+      return new CSRMatrix<IndexT, ValueT>(filename, platform);
+    } else if (format == Format::sss) {
+      return new CSRMatrix<IndexT, ValueT>(filename, platform, true);
+    } else if (format == Format::hyb) {
+      return new CSRMatrix<IndexT, ValueT>(filename, platform, true, true);
+    } else {
+      return new COOMatrix<IndexT, ValueT>(filename, platform);
+    }
+  }
 };
 
 template <typename IndexT, typename ValueT>
-SparseMatrix<IndexT, ValueT>::~SparseMatrix() {}
-
-// Factory method for initializing a sparse matrix from an MMF file on disk
-template <typename IndexT, typename ValueT>
-static SparseMatrix<IndexT, ValueT> *
-createSparseMatrix(const std::string &filename, Format format = Format::coo,
-                   Platform platform = Platform::cpu) {
-  if (format == Format::csr) {
-    return new CSRMatrix<IndexT, ValueT>(filename, platform);
-  } else if (format == Format::sss) {
-    return new CSRMatrix<IndexT, ValueT>(filename, platform, true);
-  } else if (format == Format::hyb) {
-    return new CSRMatrix<IndexT, ValueT>(filename, platform, true, true);
-  } else {
-    return new COOMatrix<IndexT, ValueT>(filename, platform);
-  }
-}
+SparseMatrix<IndexT, ValueT>::~SparseMatrix() = default;
 
 } // end of namespace sparse
 } // end of namespace matrix
