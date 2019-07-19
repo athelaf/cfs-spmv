@@ -2,7 +2,13 @@ SUBDIRS = src test bench
 .PHONY: all clean $(SUBDIRS)
 .NOTPARALLEL: $(SUBDIRS)
 
+LOG ?= 1
+USE_DOUBLE ?= 1
+USE_ORDERING ?= 0
+USE_BARRIER ?= 0
+
 CXX ?= g++
+MPI_CXX ?= mpicxx
 CXXFLAGS := -std=c++14 -Wall -fPIC -fopenmp
 CPPFLAGS :=
 LDFLAGS :=
@@ -28,11 +34,16 @@ ifeq ($(USE_ORDERING), 1)
 	CPPFLAGS += -D_USE_ORDERING
 endif
 
+ifeq ($(USE_BARRIER), 1)
+	CPPFLAGS += -D_USE_BARRIER
+endif
+
 ifeq ($(LOG), 1)
 	CPPFLAGS +=  -D_LOG_INFO
 endif
 
 export CXX
+export MPI_CXX
 export CPPFLAGS
 export CXXFLAGS
 export LDFLAGS

@@ -2,13 +2,18 @@ SUBDIRS = src test bench
 .PHONY: all clean $(SUBDIRS)
 .NOTPARALLEL: $(SUBDIRS)
 
+LOG ?= 1
+USE_DOUBLE ?= 1
+USE_ORDERING ?= 0
+USE_BARRIER ?= 0
+
 MKL_ROOT = $(INTEL_ROOT)/mkl
 
 CXX := $(INTEL_ROOT)/bin/icpc
-CXXFLAGS := -std=c++11 -Wall -fPIC -m64 -qopenmp
 CPPFLAGS := -I${INTEL_ROOT}/include/icc -D_INTEL_COMPILER
 LDFLAGS := -L${INTEL_ROOT}/lib/intel64
-LIBS := -liomp5 -lpthread -lm -ldl
+CXXFLAGS := -std=c++11 -Wall -fPIC -m64 -qopenmp
+LIBS := -ltbb -liomp5 -lpthread -lm -ldl
 
 # Boost
 CPPFLAGS += -I$(BOOST_DIR)/include
@@ -28,6 +33,10 @@ endif
 
 ifeq ($(USE_ORDERING), 1)
 	CPPFLAGS += -D_USE_ORDERING
+endif
+
+ifeq ($(USE_BARRIER), 1)
+	CPPFLAGS += -D_USE_BARRIER
 endif
 
 ifeq ($(LOG), 1)
