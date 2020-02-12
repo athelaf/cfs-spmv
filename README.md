@@ -1,4 +1,8 @@
 # cfs-spmv
+This is an implementation of the work presented in the paper:
+
+"Athena Elafrou, Georgios Goumas, and Nectarios Koziris. 2019. Conflict-free symmetric sparse matrix-vector multiplication on multicore architectures. In Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis (SC ’19)."
+
 # Dependencies
 * Boost Graph Library
 * OpenMP
