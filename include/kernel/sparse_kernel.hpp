@@ -1,4 +1,5 @@
-#pragma once
+#ifndef SPARSE_KERNEL_HPP
+#define SPARSE_KERNEL_HPP
 
 #include "matrix/sparse_matrix.hpp"
 
@@ -35,3 +36,5 @@ private:
 
 } // end of namespace sparse
 } // end of namespace kernel
+
+#endif

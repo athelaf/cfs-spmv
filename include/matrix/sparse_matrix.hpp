@@ -1,12 +1,11 @@
-#pragma once
+#ifndef SPARSE_MATRIX_HPP
+#define SPARSE_MATRIX_HPP
 
 #include <random>
 #include <string>
 
-#include "utils/platforms.hpp"
-
-#include "coo_matrix.hpp"
 #include "csr_matrix.hpp"
+#include "utils/platform.hpp"
 
 namespace matrix {
 namespace sparse {
@@ -31,16 +30,14 @@ public:
   // Factory functions
   // Factory method for initializing a sparse matrix from an MMF file on disk
   static SparseMatrix<IndexT, ValueT> *
-  create(const string &filename, Format format = Format::coo,
+  create(const string &filename, Format format = Format::csr,
          Platform platform = Platform::cpu) {
-    if (format == Format::csr) {
-      return new CSRMatrix<IndexT, ValueT>(filename, platform);
-    } else if (format == Format::sss) {
+    if (format == Format::sss) {
       return new CSRMatrix<IndexT, ValueT>(filename, platform, true);
     } else if (format == Format::hyb) {
       return new CSRMatrix<IndexT, ValueT>(filename, platform, true, true);
     } else {
-      return new COOMatrix<IndexT, ValueT>(filename, platform);
+      return new CSRMatrix<IndexT, ValueT>(filename, platform);
     }
   }
 };
@@ -50,3 +47,5 @@ SparseMatrix<IndexT, ValueT>::~SparseMatrix() = default;
 
 } // end of namespace sparse
 } // end of namespace matrix
+
+#endif

@@ -3,8 +3,11 @@
 namespace util {
 namespace runtime {
 
+std::atomic<bool> done[MAX_THREADS][MAX_THREADS];
+int counter[MAX_THREADS];
+
 size_t get_threads() {
-  const char *threads_env = getenv("OMP_NUM_THREADS");
+  const char *threads_env = getenv("CFS_NUM_THREADS");
   int ret = 1;
 
   if (threads_env) {

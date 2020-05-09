@@ -1,6 +1,7 @@
-#pragma once
+#ifndef ALLOCATOR_HPP
+#define ALLOCATOR_HPP
 
-#include "platforms.hpp"
+#include "platform.hpp"
 
 namespace util {
 
@@ -8,3 +9,5 @@ void internal_free(void *pointer, Platform platform = Platform::cpu);
 void *internal_alloc(size_t bytes, Platform platform = Platform::cpu);
 
 } // end of namespace util
+
+#endif

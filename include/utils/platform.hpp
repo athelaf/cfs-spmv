@@ -1,4 +1,5 @@
-#pragma once
+#ifndef PLATFORM_HPP
+#define PLATFORM_HPP
 
 #include <cmath>
 
@@ -14,13 +15,22 @@ namespace util {
 enum class Platform { cpu };
 enum class Kernel { SpDMV };
 enum class Tuning { None, Aggressive };
-enum class Format { coo, csr, sss, hyb };
+enum class Format { none, csr, sss, hyb };
 
 inline int iceildiv(const int a, const int b) { return (a + b - 1) / b; }
+
+inline bool isEqual(float x, float y) {
+  const float epsilon = 1e-4;
+  return abs(x - y) <= epsilon * abs(x);
+  // see Knuth section 4.2.2 pages 217-218
+}
+
 inline bool isEqual(double x, double y) {
-  const double epsilon = 1e-7 /* some small number such as 1e-5 */;
+  const double epsilon = 1e-8;
   return abs(x - y) <= epsilon * abs(x);
   // see Knuth section 4.2.2 pages 217-218
 }
 
 } // end of namespace util
+
+#endif

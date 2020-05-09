@@ -1,17 +1,12 @@
 # cfs-spmv
 # Dependencies
-* Boost Graph Library
+* C++ compiler with c++11 support
 * OpenMP
 * Intel(R) Threading Building Blocks
-* C++ compiler with c++14 support
+
+# Compilation options
+* --enable-log to enable logging 
+* --enable-dp to enable double-precision floating-point computations
 
 # Compilation
-Generic options include:
-* LOG=1 to enable logging 
-* USE_DOUBLE=1 to enable double-precision floating-point computations
-* MKL=1 to enable benchmarking of Intel MKL (you may need to set MKL_ROOT to the correct path)
-* RSB=1 to enable benchmarking of librsb (you may need to set RSB_ROOT to the correct path)
-
-How to compile:
-* GNU C/C++: make all
-* Intel(R) C/C++: INTEL_ROOT=<path_to_intel_root> make -f Makefile.intel all
+mkdir build; cd build; ../configure; make; make install

@@ -3,7 +3,7 @@
 #include <omp.h>
 #include <string.h>
 
-#ifdef _INTEL_MKL
+#ifdef _MKL
 #include <mkl.h>
 #include <mkl_spblas.h>
 #endif
@@ -13,10 +13,10 @@
 #include <rsb.h>
 #endif
 
-#include "kernel/sparse_kernels.hpp"
-#include "matrix/sparse_matrix.hpp"
+#include "cfs.hpp"
 
 using namespace std;
+using namespace util;
 using namespace matrix::sparse;
 using namespace kernel::sparse;
 
@@ -37,9 +37,8 @@ static void set_program_name(char *path) {
 }
 
 static void print_usage() {
-  cout << "Usage: " << program_name
-       << " <mmf_file> <format>(0: COO, 1: CSR, 2:SSS, 3: HYB, 4: MKL-CSR, 5: "
-          "MKL-BSR, 6: RSB) <iterations>"
+  cout << "Usage: " << program_name << " <mmf_file> <format>(0: CSR, 1:SSS, 2: "
+                                       "HYB, 3: MKL-CSR, 4: RSB) <iterations>"
        << endl;
 }
 
@@ -52,8 +51,8 @@ int main(int argc, char **argv) {
   }
 
   const string mmf_file(argv[1]);
-  int format = atoi(argv[2]);
-  if (format > 6) {
+  int fmt = atoi(argv[2]);
+  if (fmt > 4) {
     cerr << "Error in arguments!" << endl;
     print_usage();
     exit(1);
@@ -61,15 +60,66 @@ int main(int argc, char **argv) {
   size_t loops = atoi(argv[3]);
 
   // Load a sparse matrix from an MMF file
-  SparseMatrix<INDEX, VALUE> *A = nullptr;
-  A = SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::coo);
-  int M = A->nrows();
-  int N = A->ncols();
-  int nnz = A->nnz();
+  void *mat = nullptr;
+  int M = 0, N = 0, nnz = 0;
+  string format_string;
+  Format format = Format::none;
+  switch (fmt) {
+  case 0: {
+    format = Format::csr;
+    format_string = "CSR";
+    break;
+  }
+  case 1: {
+    format = Format::sss;
+    format_string = "SSS";
+    break;
+  }
+  case 2: {
+    format = Format::hyb;
+    format_string = "HYB";
+    break;
+  }
+  case 3: {
+    format_string = "MKL-CSR";
+    break;
+  }
+  case 4: {
+    format_string = "RSB";
+    break;
+  }
+  }
 
-  // random_device rd;
-  // mt19937 gen(rd());
-  // uniform_real_distribution<> dis_val(0.01, 0.42);
+  switch (fmt) {
+  case 0:
+  case 1:
+  case 2: {
+    SparseMatrix<INDEX, VALUE> *tmp =
+        SparseMatrix<INDEX, VALUE>::create(mmf_file, format);
+    M = tmp->nrows();
+    N = tmp->ncols();
+    nnz = tmp->nnz();
+    mat = (void *)tmp;
+    break;
+  }
+  case 3: {
+#ifdef _MKL
+    CSRMatrix<INDEX, VALUE> *tmp = new CSRMatrix<INDEX, VALUE>(mmf_file);
+    M = tmp->nrows();
+    N = tmp->ncols();
+    nnz = tmp->nnz();
+    mat = (void *)tmp;
+#endif
+    break;
+  }
+  case 4:
+    break;
+  }
+
+  // Prepare vectors
+  random_device rd;
+  mt19937 gen(rd());
+  uniform_real_distribution<> dis_val(0.01, 0.42);
 
   VALUE *y = (VALUE *)internal_alloc(M * sizeof(VALUE));
   #pragma omp parallel for schedule(static)
@@ -80,47 +130,15 @@ int main(int argc, char **argv) {
   VALUE *x = (VALUE *)internal_alloc(N * sizeof(VALUE));
   #pragma omp parallel for schedule(static)
   for (int i = 0; i < N; i++) {
-    x[i] = 0.42; // dis_val(gen);
+    x[i] = dis_val(gen);
   }
 
   double compute_time = 0.0, preproc_time = 0.0, tstart = 0.0, tstop = 0.0,
          gflops = 0.0;
-  string format_string;
-  switch (format) {
-  case 0: {
-    format_string = "COO";
-    break;
-  }
-  case 1: {
-    A = SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::csr);
-    format_string = "CSR";
-    break;
-  }
-  case 2: {
-    A = SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::sss);
-    format_string = "SSS";
-    break;
-  }
-  case 3: {
-    A = SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::hyb);
-    format_string = "HYB";
-    break;
-  }
-  case 4: {
-    format_string = "MKL-CSR";
-    break;
-  }
-  case 5: {
-    format_string = "MKL-BSR";
-    break;
-  }
-  case 6: {
-    format_string = "RSB";
-    break;
-  }
-  }
 
-  if (format < 4) {
+  if (fmt < 3) {
+    SparseMatrix<INDEX, VALUE> *A = (SparseMatrix<INDEX, VALUE> *)mat;
+
     tstart = omp_get_wtime();
     SpDMV<INDEX, VALUE> spdmv(A);
     tstop = omp_get_wtime();
@@ -141,6 +159,7 @@ int main(int argc, char **argv) {
     tstart = omp_get_wtime();
     for (size_t i = 0; i < loops; i++)
       spdmv(y, M, x, N);
+
     tstop = omp_get_wtime();
     compute_time = tstop - tstart;
     gflops = ((double)loops * 2 * nnz * 1.e-9) / compute_time;
@@ -154,8 +173,8 @@ int main(int argc, char **argv) {
     delete A;
   }
 
-  if (format == 4) {
-#ifdef _INTEL_MKL
+  if (fmt == 3) {
+#ifdef _MKL
     CSRMatrix<INDEX, VALUE> *A_csr = new CSRMatrix<INDEX, VALUE>(mmf_file);
     VALUE alpha = 1, beta = 0;
     sparse_matrix_t A_view;
@@ -223,85 +242,10 @@ int main(int argc, char **argv) {
 
     mkl_sparse_destroy(A_view);
     delete A_csr;
-#endif // _INTEL_MKL
+#endif // _MKL
   }
 
-  if (format == 5) {
-#ifdef _INTEL_MKL
-    CSRMatrix<INDEX, VALUE> *A_csr = new CSRMatrix<INDEX, VALUE>(mmf_file);
-    sparse_status_t stat;
-    sparse_matrix_t A_view_csr;
-#ifdef _USE_DOUBLE
-    stat = mkl_sparse_d_create_csr(&A_view_csr, SPARSE_INDEX_BASE_ZERO, M, N,
-                                   A_csr->rowptr(), A_csr->rowptr() + 1,
-                                   A_csr->colind(), A_csr->values());
-#else
-    stat = mkl_sparse_s_create_csr(&A_view_csr, SPARSE_INDEX_BASE_ZERO, M, N,
-                                   A_csr->rowptr(), A_csr->rowptr() + 1,
-                                   A_csr->colind(), A_csr->values());
-#endif
-    if (stat != SPARSE_STATUS_SUCCESS) {
-      cout << "[INFO]: MKL conversion to CSR failed" << endl;
-      exit(1);
-    }
-
-    sparse_matrix_t A_view_bsr;
-    const sparse_operation_t op = SPARSE_OPERATION_NON_TRANSPOSE;
-    const int blk_size = 3;
-    tstart = omp_get_wtime();
-    stat = mkl_sparse_convert_bsr(A_view_csr, blk_size, SPARSE_LAYOUT_ROW_MAJOR,
-                                  op, &A_view_bsr);
-    tstop = omp_get_wtime();
-    preproc_time = tstop - tstart;
-    if (stat != SPARSE_STATUS_SUCCESS) {
-      cout << "[INFO]: MKL conversion to BSR failed with " << stat << endl;
-      exit(1);
-    }
-
-    // Cleanup
-    mkl_sparse_destroy(A_view_csr);
-    delete A_csr;
-
-    struct matrix_descr matdescr;
-    matdescr.type = SPARSE_MATRIX_TYPE_GENERAL;
-    VALUE alpha = 1, beta = 0;
-    mkl_set_num_threads(get_threads());
-#ifdef _LOG_INFO
-    cout << "[INFO]: warming up caches..." << endl;
-#endif
-    // Warm up run
-    for (size_t i = 0; i < loops / 2; i++)
-#ifdef _USE_DOUBLE
-      mkl_sparse_d_mv(op, alpha, A_view_bsr, matdescr, x, beta, y);
-#else
-      mkl_sparse_s_mv(op, alpha, A_view_bsr, matdescr, x, beta, y);
-#endif
-
-#ifdef _LOG_INFO
-    cout << "[INFO]: benchmarking SpDMV using MKL-BSR..." << endl;
-#endif
-    tstart = omp_get_wtime();
-    // Benchmark run
-    for (size_t i = 0; i < loops; i++)
-#ifdef _USE_DOUBLE
-      mkl_sparse_d_mv(op, alpha, A_view_bsr, matdescr, x, beta, y);
-#else
-      mkl_sparse_s_mv(op, alpha, A_view_bsr, matdescr, x, beta, y);
-#endif
-    tstop = omp_get_wtime();
-    compute_time = tstop - tstart;
-
-    gflops = ((double)loops * 2 * nnz * 1.e-9) / compute_time;
-    cout << setprecision(4) << "matrix: " << basename(mmf_file.c_str())
-         << " format: " << format_string << " preproc(sec): " << preproc_time
-         << " t(sec): " << compute_time / loops << " gflops/s: " << gflops
-         << " threads: " << get_threads() << endl;
-
-    mkl_sparse_destroy(A_view_bsr);
-#endif // _INTEL_MKL
-  }
-
-  if (format == 6) {
+  if (fmt == 4) {
 #ifdef _RSB
     blas_sparse_matrix A = blas_invalid_handle;
     rsb_type_t typecode = RSB_NUMERICAL_TYPE_DOUBLE;

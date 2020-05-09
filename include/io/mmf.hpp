@@ -1,4 +1,5 @@
-#pragma once
+#ifndef MMF_HPP
+#define MMF_HPP
 
 #include <algorithm>
 #include <cassert>
@@ -343,3 +344,5 @@ void ParseElement(std::vector<std::string> &arguments, IndexType &y,
 
 } // end of namespace io
 } // end of namespace util
+
+#endif

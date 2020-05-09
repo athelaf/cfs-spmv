@@ -2,9 +2,7 @@
 #include <iostream>
 #include <string.h>
 
-#include "kernel/sparse_kernels.hpp"
-#include "matrix/sparse_matrix.hpp"
-#include "utils/platforms.hpp"
+#include "cfs.hpp"
 
 using namespace std;
 using namespace util;
@@ -25,8 +23,7 @@ static void set_program_name(char *path) {
 
 static void print_usage() {
   cout << "Usage: " << program_name
-       << " <mmf_file> <format>(0: COO, 1: CSR, 2: CFS-SSS, 3: CFH-SSS)"
-       << endl;
+       << " <mmf_file> <format>(0: CSR, 1: CFS-SSS, 2: CFH-SSS)" << endl;
 }
 
 int main(int argc, char **argv) {
@@ -39,7 +36,7 @@ int main(int argc, char **argv) {
 
   const string mmf_file(argv[1]);
   int fmt = atoi(argv[2]);
-  if (fmt > 3) {
+  if (fmt > 2) {
     cerr << "Error in arguments!" << endl;
     print_usage();
     exit(1);
@@ -49,15 +46,12 @@ int main(int argc, char **argv) {
   SparseMatrix<INDEX, VALUE> *A = nullptr;
   switch (fmt) {
   case 0:
-    A = SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::coo);
-    break;
-  case 1:
     A = SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::csr);
     break;
-  case 2:
+  case 1:
     A = SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::sss);
     break;
-  case 3:
+  case 2:
     A = SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::hyb);
     break;
   default:
@@ -81,11 +75,11 @@ int main(int argc, char **argv) {
     x[i] = dis_val(gen);
   }
 
-  SpDMV<INDEX, VALUE> fn(A);
+  SpDMV<INDEX, VALUE> fn(A, Tuning::Aggressive);
   fn(y, M, x, N);
 
   SparseMatrix<INDEX, VALUE> *A_test =
-      SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::coo);
+      SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::csr);
   SpDMV<INDEX, VALUE> test(A_test, Tuning::None);
   VALUE *y_test = (VALUE *)internal_alloc(M * sizeof(VALUE));
   test(y_test, M, x, N);
