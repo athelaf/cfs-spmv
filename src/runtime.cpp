@@ -1,12 +1,13 @@
 #include "utils/runtime.hpp"
 
+namespace cfs {
 namespace util {
 namespace runtime {
 
-std::atomic<bool> done[MAX_THREADS][MAX_THREADS];
-int counter[MAX_THREADS];
+std::atomic<bool> done[MaxThreads][MaxThreads];
+int counter[MaxThreads];
 
-size_t get_threads() {
+size_t get_num_threads() {
   const char *threads_env = getenv("CFS_NUM_THREADS");
   int ret = 1;
 
@@ -34,3 +35,4 @@ void setaffinity_oncpu(unsigned int cpu) {
 
 } // end of namespace runtime
 } // end of namespace util
+} // end of namespace cfs

@@ -4,8 +4,14 @@
 #include <random>
 #include <string>
 
-#include "csr_matrix.hpp"
+#include "cfs_config.hpp"
 #include "utils/platform.hpp"
+
+using namespace std;
+
+namespace cfs {
+
+using namespace util;
 
 namespace matrix {
 namespace sparse {
@@ -31,21 +37,11 @@ public:
   // Factory method for initializing a sparse matrix from an MMF file on disk
   static SparseMatrix<IndexT, ValueT> *
   create(const string &filename, Format format = Format::csr,
-         Platform platform = Platform::cpu) {
-    if (format == Format::sss) {
-      return new CSRMatrix<IndexT, ValueT>(filename, platform, true);
-    } else if (format == Format::hyb) {
-      return new CSRMatrix<IndexT, ValueT>(filename, platform, true, true);
-    } else {
-      return new CSRMatrix<IndexT, ValueT>(filename, platform);
-    }
-  }
+         Platform platform = Platform::cpu);
 };
-
-template <typename IndexT, typename ValueT>
-SparseMatrix<IndexT, ValueT>::~SparseMatrix() = default;
 
 } // end of namespace sparse
 } // end of namespace matrix
+} // end of namespace cfs
 
 #endif

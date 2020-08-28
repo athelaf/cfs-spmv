@@ -1,9 +1,9 @@
-#include <cassert>
+#include "utils/allocator.hpp"
 #include <iostream>
 
-#include "utils/allocator.hpp"
-
+namespace cfs {
 namespace util {
+namespace memory {
 
 void internal_free(void *pointer, Platform platform) {
   if (!pointer) {
@@ -22,7 +22,7 @@ void internal_free(void *pointer, Platform platform) {
 }
 
 void *internal_alloc(size_t bytes, Platform platform) {
-  void *pointer = NULL;
+  void *pointer = nullptr;
 
   if (platform == Platform::cpu) {
 #ifdef _INTEL_COMPILER
@@ -42,4 +42,6 @@ void *internal_alloc(size_t bytes, Platform platform) {
   return pointer;
 }
 
+} // end of namespace memory
 } // end of namespace util
+} // end of namespace cfs

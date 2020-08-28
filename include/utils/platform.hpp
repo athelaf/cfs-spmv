@@ -3,6 +3,8 @@
 
 #include <cmath>
 
+#include "cfs_config.hpp"
+
 #ifdef _INTEL_COMPILER
 #define PRAGMA_IVDEP _Pragma("ivdep")
 #else
@@ -10,7 +12,10 @@
 //#define PRAGMA_IVDEP
 #endif
 
+namespace cfs {
 namespace util {
+
+using namespace std;
 
 enum class Platform { cpu };
 enum class Kernel { SpDMV };
@@ -32,5 +37,6 @@ inline bool isEqual(double x, double y) {
 }
 
 } // end of namespace util
+} // end of namespace cfs
 
 #endif

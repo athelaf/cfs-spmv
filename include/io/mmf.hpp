@@ -10,7 +10,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace util {
+namespace cfs {
 namespace io {
 
 template <typename IndexType, typename ValueType> struct Elem {
@@ -343,6 +343,6 @@ void ParseElement(std::vector<std::string> &arguments, IndexType &y,
 }
 
 } // end of namespace io
-} // end of namespace util
+} // end of namespace cfs
 
 #endif

@@ -16,9 +16,11 @@
 #include "cfs.hpp"
 
 using namespace std;
-using namespace util;
-using namespace matrix::sparse;
-using namespace kernel::sparse;
+using namespace cfs::util;
+using namespace cfs::util::memory;
+using namespace cfs::util::runtime;
+using namespace cfs::matrix::sparse;
+using namespace cfs::kernel::sparse;
 
 char *program_name = NULL;
 
@@ -58,6 +60,7 @@ int main(int argc, char **argv) {
     exit(1);
   }
   size_t loops = atoi(argv[3]);
+  int nthreads = get_num_threads();
 
   // Load a sparse matrix from an MMF file
   void *mat = nullptr;
@@ -122,13 +125,13 @@ int main(int argc, char **argv) {
   uniform_real_distribution<> dis_val(0.01, 0.42);
 
   VALUE *y = (VALUE *)internal_alloc(M * sizeof(VALUE));
-  #pragma omp parallel for schedule(static)
+  #pragma omp parallel for schedule(static) num_threads(nthreads)
   for (int i = 0; i < M; i++) {
     y[i] = 0.0;
   }
 
   VALUE *x = (VALUE *)internal_alloc(N * sizeof(VALUE));
-  #pragma omp parallel for schedule(static)
+  #pragma omp parallel for schedule(static) num_threads(nthreads)
   for (int i = 0; i < N; i++) {
     x[i] = dis_val(gen);
   }
@@ -166,7 +169,7 @@ int main(int argc, char **argv) {
     cout << setprecision(4) << "matrix: " << basename(mmf_file.c_str())
          << " format: " << format_string << " preproc(sec): " << preproc_time
          << " t(sec): " << compute_time / loops << " gflops/s: " << gflops
-         << " threads: " << get_threads()
+         << " threads: " << nthreads
          << " size(MB): " << A->size() / (float)(1024 * 1024) << endl;
 
     // Cleanup
@@ -179,6 +182,7 @@ int main(int argc, char **argv) {
     VALUE alpha = 1, beta = 0;
     sparse_matrix_t A_view;
     sparse_status_t stat;
+    mkl_set_num_threads(nthreads);
 #ifdef _USE_DOUBLE
     stat = mkl_sparse_d_create_csr(&A_view, SPARSE_INDEX_BASE_ZERO, M, N,
                                    A_csr->rowptr(), A_csr->rowptr() + 1,
@@ -189,10 +193,7 @@ int main(int argc, char **argv) {
                                    A_csr->colind(), A_csr->values());
 #endif
     struct matrix_descr matdescr;
-    // matdescr.type = SPARSE_MATRIX_TYPE_GENERAL;
-    matdescr.type = SPARSE_MATRIX_TYPE_SYMMETRIC;
-    matdescr.mode = SPARSE_FILL_MODE_LOWER;
-    matdescr.diag = SPARSE_DIAG_NON_UNIT;
+    matdescr.type = SPARSE_MATRIX_TYPE_GENERAL;
     tstart = omp_get_wtime();
     stat = mkl_sparse_set_mv_hint(A_view, SPARSE_OPERATION_NON_TRANSPOSE,
                                   matdescr, 100000);
@@ -204,7 +205,6 @@ int main(int argc, char **argv) {
       cout << "[INFO]: MKL auto-tuning failed" << endl;
     }
 
-    mkl_set_num_threads(get_threads());
 #ifdef _LOG_INFO
     cout << "[INFO]: warming up caches..." << endl;
 #endif
@@ -238,7 +238,7 @@ int main(int argc, char **argv) {
     cout << setprecision(4) << "matrix: " << basename(mmf_file.c_str())
          << " format: " << format_string << " preproc(sec): " << preproc_time
          << " t(sec): " << compute_time / loops << " gflops/s: " << gflops
-         << " threads: " << get_threads() << endl;
+         << " threads: " << nthreads << endl;
 
     mkl_sparse_destroy(A_view);
     delete A_csr;
@@ -287,7 +287,7 @@ int main(int argc, char **argv) {
     cout << setprecision(4) << "matrix: " << basename(mmf_file.c_str())
          << " format: " << format_string << " preproc(sec): " << preproc_time
          << " t(sec): " << compute_time / loops << " gflops/s: " << gflops
-         << " threads: " << get_threads() << endl;
+         << " threads: " << nthreads << endl;
 
     // Cleanup
     BLAS_usds(A);

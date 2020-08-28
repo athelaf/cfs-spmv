@@ -1,6 +1,6 @@
 #include "io/mmf.hpp"
 
-namespace util {
+namespace cfs {
 namespace io {
 
 static std::vector<std::string> split(const std::string &str,
@@ -48,4 +48,4 @@ template struct MMF<int, float>;
 template struct MMF<int, double>;
 
 } // end of namespace io
-} // end of namespace util
+} // end of namespace cfs

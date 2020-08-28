@@ -2,31 +2,40 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.69])
-AC_INIT([sparse], [0.8], [athena@cslab.ece.ntua.gr])
-AC_CONFIG_SRCDIR([cfs_config.h.in])
-AC_CONFIG_HEADERS([cfs_config.h])
+AC_INIT([cfs], [0.8], [athena@cslab.ece.ntua.gr])
+
+dnl Check if the source folder is correct
+AC_CONFIG_SRCDIR([src/cfs.cpp])
+
+AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIR([m4check])
 AC_CANONICAL_BUILD
 AC_CANONICAL_HOST
 
-dnl Locate the C++ compiler.
-AC_LANG(C++)
+dnl Check for C++ preprocessor, the compiler and the library compiler
+AC_PROG_CXXCPP
+AC_PROG_CXX
+AC_LANG([C++])
 AX_CXX_COMPILE_STDCXX([11], [noext], [mandatory])
 
-dnl Check for programs
-AC_PROG_CXX([g++])
-AC_PROG_AWK
-AC_PROG_CC
-AC_PROG_CPP
-AC_PROG_INSTALL
-AC_PROG_LN_S
-AC_PROG_MAKE_SET
-AC_PROG_AR
+dnl Check for header files
+AC_HEADER_STDC
+AC_CHECK_HEADER_STDBOOL
+AC_CHECK_HEADERS([string])
+AC_CHECK_HEADERS([iostream])
+AC_CHECK_HEADERS([stdlib.h string.h])
 AC_OPENMP
 
+dnl Check for typedefs, structures, and compiler characteristics.
+AC_C_INLINE
+AC_TYPE_SIZE_T
+
+dnl Check for library functions
+AC_CHECK_FUNCS([memset strdup])
+
 dnl Set additional compiler and linker flags among Makefiles
-AC_SUBST(AM_CXXFLAGS, "$OPENMP_CXXFLAGS -Wall")
-AC_SUBST(AM_CPPFLAGS, "$OPENMP_CXXFLAGS")
+AC_SUBST([AM_CXXFLAGS], "$OPENMP_CXXFLAGS -Wall")
+AC_SUBST([AM_CPPFLAGS], "$OPENMP_CXXFLAGS")
 
 dnl Required dependencies
 AC_CHECK_LIB([dl], [main])
@@ -56,17 +65,6 @@ AC_ARG_ENABLE([log], AS_HELP_STRING([--enable-log], [Enable logging info. Defaul
 AS_IF([test "x$enable_log" = "xyes"], [
   AC_DEFINE([_LOG_INFO], [1], [Define if logging is enabled.])
 ])
-
-dnl Checks for header files
-AC_CHECK_HEADERS([stdlib.h string.h])
-
-dnl Checks for typedefs, structures, and compiler characteristics.
-AC_CHECK_HEADER_STDBOOL
-AC_C_INLINE
-AC_TYPE_SIZE_T
-
-dnl Checks for library functions.
-AC_CHECK_FUNCS([memset strdup])
 
 dnl Initialize automake
 AM_INIT_AUTOMAKE([1.11 -Wall -Wno-extra-portability foreign])

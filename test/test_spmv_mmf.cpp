@@ -5,11 +5,13 @@
 #include "cfs.hpp"
 
 using namespace std;
-using namespace util;
-using namespace matrix::sparse;
-using namespace kernel::sparse;
+using namespace cfs::util;
+using namespace cfs::util::memory;
+using namespace cfs::util::runtime;
+using namespace cfs::matrix::sparse;
+using namespace cfs::kernel::sparse;
 
-char *program_name = NULL;
+char *program_name = nullptr;
 
 typedef int INDEX;
 typedef double VALUE;
@@ -76,7 +78,9 @@ int main(int argc, char **argv) {
   }
 
   SpDMV<INDEX, VALUE> fn(A, Tuning::Aggressive);
-  fn(y, M, x, N);
+  // Run more than one iteration
+  for (int i = 0; i < 2; ++i)
+    fn(y, M, x, N);
 
   SparseMatrix<INDEX, VALUE> *A_test =
       SparseMatrix<INDEX, VALUE>::create(mmf_file, Format::csr);
